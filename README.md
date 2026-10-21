@@ -47,12 +47,14 @@ Notice `reconciled_after_timeout` in the audit events and only one delivery for 
 The default is a deterministic local interpreter: no API key, network request, or cost.
 
 ```bash
-export OPENAI_API_KEY="your_key_here"
-export OPENAI_MODEL="gpt-4o-mini"  # optional
-python main.py --llm openai --db .data/llm_demo.sqlite
+export ANTHROPIC_API_KEY="your_key_here"
+export ANTHROPIC_MODEL="claude-haiku-5-5"  # optional
+python main.py --llm claude --db .data/claude_demo.sqlite
 ```
 
-`OpenAIInterpreter` calls the OpenAI Chat Completions API to **classify notes**, not to change task facts or send messages. It accepts only `{"blocker_type":"none|materials|upstream"}` (one of these three exact values). Extra fields, invalid JSON, errors, or unsupported values trigger a safe deterministic fallback. Instructions inside task notes are treated as untrusted text. Message text is always assembled by Python from verified task fields, not copied from LLM output.
+`ClaudeInterpreter` calls the Claude Messages API to **classify non-empty notes**, not to change task facts or send messages. It uses a small JSON Schema (`output_config.format`) to restrict output to a single blocker category. It accepts only `{"blocker_type":"none|materials|upstream"}` (one of these three exact values). Extra fields, invalid JSON, errors, or unsupported values trigger a safe deterministic fallback. Instructions inside task notes are treated as untrusted text. Message text is always assembled by Python from verified task fields, not copied from LLM output. The built-in HTTP client uses only Python standard libraries; Claude Code CLI is not needed.
+
+The `.env.example` file lists the environment variable names; the app does not automatically load `.env` files. Export the values in your shell before running. Check `.data/delivery_log.json` for `llm_fallback` events if Claude is unavailable or returns an unusable response. Live API calls may cost money. The automated tests mock the network and do not require an API key.
 
 ## How to read the code
 
@@ -61,7 +63,7 @@ Read the files in this order:
 1. `main.py` — command-line options and where results are written.
 2. `followup/models.py` — normalizes input and computes a stable operation ID.
 3. `followup/rules.py` — readable, deterministic business decisions.
-4. `followup/ai.py` — optional LLM interpretation with strict validation and fallback.
+4. `followup/ai.py` — optional Claude classification with JSON Schema, strict validation and safe fallback.
 5. `followup/api.py` — fake task and delivery APIs (including failure simulation).
 6. `followup/store.py` — SQLite mock remote delivery receipts and audit log.
 7. `followup/service.py` — ties everything together; retries and reconciles errors.
