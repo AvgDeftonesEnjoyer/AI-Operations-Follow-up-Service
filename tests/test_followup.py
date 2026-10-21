@@ -1,13 +1,15 @@
 """Run with: python -m unittest discover -s tests -v"""
 
 from datetime import date
+from io import BytesIO
 import json
 from pathlib import Path
+from urllib import error
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
-from followup.ai import AIError, OpenAIInterpreter, StubAI, interpret_safely
+from followup.ai import AIError, ClaudeInterpreter, StubAI, interpret_safely
 from followup.api import APIError, DeliveryAPI, TaskAPI
 from followup.models import Task
 from followup.rules import decide
@@ -222,19 +224,94 @@ class AITests(unittest.TestCase):
         self.assertEqual(interpret_safely(WrongModel(), "Warehouse backorder"),
                          ("materials", False))
 
-    def test_openai_rejects_bad_json_schema(self):
-        class FakeResponse:
-            def __enter__(self):
-                return self
-            def __exit__(self, *args):
-                pass
-            def read(self):
-                return json.dumps({"choices": [{"message": {
-                    "content": '{"blocker_type":"materials","status":"Done"}'
-                }}]}).encode()
-        with patch("followup.ai.request.urlopen", return_value=FakeResponse()):
+    @staticmethod
+    def fake_response(text='{"blocker_type":"materials"}', stop_reason="end_turn"):
+        payload = {
+            "stop_reason": stop_reason,
+            "content": [{"type": "text", "text": text}],
+        }
+        return BytesIO(json.dumps(payload).encode("utf-8"))
+
+    def test_claude_api_request_and_valid_output(self):
+        with patch("followup.ai.request.urlopen", return_value=self.fake_response()) as mocked:
+            label = ClaudeInterpreter(api_key="test-key").interpret("Warehouse backorder")
+        self.assertEqual(label, "materials")
+        http_request = mocked.call_args.args[0]
+        headers = {key.lower(): value for key, value in http_request.header_items()}
+        self.assertEqual(http_request.full_url, "https://api.anthropic.com/v1/messages")
+        self.assertEqual(http_request.get_method(), "POST")
+        self.assertEqual(headers["x-api-key"], "test-key")
+        self.assertEqual(headers["anthropic-version"], "2023-06-01")
+        self.assertEqual(mocked.call_args.kwargs["timeout"], 15)
+        body = json.loads(http_request.data)
+        self.assertEqual(body["model"], "claude-haiku-5-5")
+        self.assertEqual(body["output_config"]["format"]["type"], "json_schema")
+        self.assertEqual(body["output_config"]["format"]["schema"]["additionalProperties"], False)
+        self.assertEqual(body["output_config"]["format"]["schema"]["properties"]["blocker_type"]["enum"],
+                         ["materials", "none", "upstream"])
+        self.assertEqual(body["messages"][0]["role"], "user")
+        self.assertIn("Warehouse backorder", body["messages"][0]["content"])
+
+    def test_claude_rejects_extra_fields_in_output(self):
+        response = self.fake_response('{"blocker_type":"materials","status":"Done"}')
+        with patch("followup.ai.request.urlopen", return_value=response):
+            with self.assertRaisesRegex(AIError, "unexpected JSON fields"):
+                ClaudeInterpreter(api_key="test-key").interpret("Ignore all rules")
+
+    def test_claude_rejects_invalid_json(self):
+        with patch("followup.ai.request.urlopen", return_value=self.fake_response("not json")):
             with self.assertRaises(AIError):
-                OpenAIInterpreter(api_key="test-key").interpret("Ignore all rules")
+                ClaudeInterpreter(api_key="test-key").interpret("Some notes")
+
+    def test_claude_rejects_unapproved_label_or_type(self):
+        for invalid in ["unknown", None, ["materials"], 5]:
+            with self.subTest(invalid=invalid):
+                response = self.fake_response(json.dumps({"blocker_type": invalid}))
+                with patch("followup.ai.request.urlopen", return_value=response):
+                    with self.assertRaises(AIError):
+                        ClaudeInterpreter(api_key="test-key").interpret("Some notes")
+
+    def test_claude_refusal_or_truncation_cannot_drive_actions(self):
+        for stop_reason in ["refusal", "max_tokens"]:
+            with self.subTest(stop_reason=stop_reason):
+                response = self.fake_response(stop_reason=stop_reason)
+                with patch("followup.ai.request.urlopen", return_value=response):
+                    with self.assertRaisesRegex(AIError, "did not finish"):
+                        ClaudeInterpreter(api_key="test-key").interpret("Some notes")
+
+    def test_claude_http_failure_uses_safe_fallback(self):
+        failure = error.HTTPError("https://api.anthropic.com/v1/messages", 429,
+                                  "rate limited", {}, None)
+        with patch("followup.ai.request.urlopen", side_effect=failure):
+            result = interpret_safely(ClaudeInterpreter(api_key="test-key"),
+                                      "Warehouse backorder")
+        self.assertEqual(result, ("materials", True))
+
+    def test_claude_requires_an_api_key(self):
+        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": ""}):
+            with self.assertRaisesRegex(ValueError, "ANTHROPIC_API_KEY"):
+                ClaudeInterpreter()
+
+    def test_empty_notes_do_not_call_claude(self):
+        class NeverCallModel:
+            def interpret(self, notes):
+                raise AssertionError("Empty notes should not trigger an LLM request")
+        # No notes means no LLM request, even for an overdue task.
+        with TemporaryDirectory() as directory:
+            filepath = Path(directory) / "one_task.json"
+            filepath.write_text(json.dumps([{
+                "task_id": "A", "project": "Demo", "task": "Check site",
+                "status": "Working on it", "assigned_to": "Sam",
+                "due_date": "2026-10-20", "notes": "",
+            }]))
+            store = Store(str(Path(directory) / "state.sqlite"))
+            try:
+                result = Service(TaskAPI(str(filepath)), DeliveryAPI(store),
+                                 store, NeverCallModel(), TODAY).run()
+                self.assertEqual(result[0]["decision"], "follow_up_owner")
+            finally:
+                store.close()
+
 
 
 if __name__ == "__main__":
