@@ -74,7 +74,7 @@ class Service:
         for task in self.fetch_tasks():
             # Missing fields and completed tasks never need a model request.
             blocker = "none"
-            if task.status != "Done" and task.owner and task.due_date:
+            if task.status != "Done" and task.owner and task.due_date and task.notes:
                 blocker, fell_back = interpret_safely(self.ai, task.notes)
                 if fell_back:
                     self.store.log("llm_fallback", detail=f"Task {task.task_id}")
