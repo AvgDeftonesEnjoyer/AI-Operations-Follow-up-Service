@@ -6,7 +6,7 @@ from datetime import date
 import json
 from pathlib import Path
 
-from followup.ai import OpenAIInterpreter, StubAI
+from followup.ai import ClaudeInterpreter, StubAI
 from followup.api import DeliveryAPI, TaskAPI
 from followup.service import Service
 from followup.store import Store
@@ -29,7 +29,7 @@ def main():
     parser.add_argument("--decisions-out", default=".data/decisions.json")
     parser.add_argument("--delivery-log-out", default=".data/delivery_log.json")
     parser.add_argument("--as-of", default="2026-10-21", help="UTC evaluation date (YYYY-MM-DD)")
-    parser.add_argument("--llm", choices=["stub", "openai"], default="stub")
+    parser.add_argument("--llm", choices=["stub", "claude"], default="stub")
     parser.add_argument("--read-failures", default="", help="E.g. 429,503")
     parser.add_argument("--send-failures", default="", help="E.g. 503,429")
     parser.add_argument("--timeout-after-commit-once", action="store_true")
@@ -41,7 +41,7 @@ def main():
         sender = DeliveryAPI(
             store, status_codes(args.send_failures), args.timeout_after_commit_once
         )
-        ai = OpenAIInterpreter() if args.llm == "openai" else StubAI()
+        ai = ClaudeInterpreter() if args.llm == "claude" else StubAI()
         service = Service(reader, sender, store, ai, date.fromisoformat(args.as_of))
         decisions = service.run()
         write_json(args.decisions_out, {"as_of": args.as_of, "decisions": decisions})
