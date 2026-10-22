@@ -7,11 +7,12 @@ import json
 from pathlib import Path
 import os
 import tempfile
+from uuid import uuid4
 
 from followup.ai import ClaudeInterpreter, StubAI
 from followup.api import DeliveryAPI, TaskAPI
 from followup.service import Service
-from followup.store import Store
+from followup.store import Store, now_utc
 
 
 def status_codes(text):
@@ -62,22 +63,32 @@ def main():
 
     store = Store(args.db)
     try:
-        reader = TaskAPI(args.fixture, read_failures)
-        sender = DeliveryAPI(
-            store, send_failures, args.timeout_after_commit_once
-        )
-        ai = ClaudeInterpreter() if args.llm == "claude" else StubAI()
-        service = Service(reader, sender, store, ai, today)
-        decisions = service.run()
-        write_json(args.decisions_out, {"as_of": args.as_of, "decisions": decisions})
+        run = {"id": uuid4().hex, "started_at": now_utc(), "status": "completed", "error": None}
+        decisions = []
+        try:
+            reader = TaskAPI(args.fixture, read_failures)
+            sender = DeliveryAPI(store, send_failures, args.timeout_after_commit_once)
+            ai = ClaudeInterpreter() if args.llm == "claude" else StubAI()
+            decisions = Service(reader, sender, store, ai, today).run()
+            if any(row["delivery_status"] == "failed" for row in decisions):
+                run.update(status="failed", error="Delivery failure")
+        except Exception as exc:
+            # Report the failure without copying task data or credentials from errors.
+            run.update(status="failed", error=type(exc).__name__)
+        run["finished_at"] = now_utc()
+        store.log("run_failed" if run["status"] == "failed" else "run_completed",
+                  detail=f"Run {run['id']}: {run['error'] or 'OK'}")
+        write_json(args.decisions_out, {"as_of": args.as_of, "run": run, "decisions": decisions})
         write_json(args.delivery_log_out, {
-            "deliveries": store.deliveries(), "events": store.events(),
+            "run": run, "deliveries": store.deliveries(), "events": store.events(),
         })
         counts = Counter(item["delivery_status"] for item in decisions)
         print(f"Processed {len(decisions)} tasks: {dict(counts)}")
+        if run["status"] == "failed":
+            print(f"Run failed: {run['error']}")
         print(f"Decisions: {args.decisions_out}")
         print(f"Delivery / audit log: {args.delivery_log_out}")
-        return 1 if counts["failed"] else 0
+        return 1 if run["status"] == "failed" else 0
     finally:
         store.close()
 

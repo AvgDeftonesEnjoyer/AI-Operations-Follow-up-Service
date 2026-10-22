@@ -48,6 +48,7 @@ class DeliveryAPI:
         return self.store.get_delivery(operation_id)
 
     def send(self, operation_id: str, action: dict):
+        """Return whether this call created a delivery, rather than replayed one."""
         self.calls += 1
         if self.fail_first:
             raise APIError(self.fail_first.pop(0))
@@ -55,4 +56,4 @@ class DeliveryAPI:
         if inserted and self.timeout_after_commit_once:
             self.timeout_after_commit_once = False
             raise AmbiguousTimeout("Response lost AFTER remote commit")
-        return self.lookup(operation_id)
+        return inserted
