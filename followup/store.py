@@ -24,6 +24,12 @@ class Store:
                 )
             """)
             self.connection.execute("""
+                CREATE TABLE IF NOT EXISTS classifications (
+                    state_id TEXT PRIMARY KEY,
+                    blocker TEXT NOT NULL CHECK (blocker IN ('none', 'materials', 'upstream'))
+                )
+            """)
+            self.connection.execute("""
                 CREATE TABLE IF NOT EXISTS events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp TEXT NOT NULL,
@@ -35,6 +41,20 @@ class Store:
 
     def close(self):
         self.connection.close()
+
+    def get_classification(self, state_id: str):
+        row = self.connection.execute(
+            "SELECT blocker FROM classifications WHERE state_id = ?", (state_id,)
+        ).fetchone()
+        return row[0] if row else None
+
+    def save_classification(self, state_id: str, blocker: str):
+        # Concurrent workers must use the same winning classification.
+        with self.connection:
+            self.connection.execute(
+                "INSERT OR IGNORE INTO classifications VALUES (?, ?)", (state_id, blocker)
+            )
+        return self.get_classification(state_id)
 
     def get_delivery(self, operation_id: str):
         row = self.connection.execute(

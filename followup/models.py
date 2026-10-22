@@ -4,20 +4,27 @@ from dataclasses import dataclass
 from datetime import date
 import hashlib
 import json
+import re
 
 
 def clean(value):
     """Convert an optional text field to a stripped string or None."""
     if value is None:
         return None
-    text = str(value).strip()
+    if not isinstance(value, str):
+        raise ValueError("Task fields must be strings or null")
+    text = value.strip()
+    if len(text) > 4000:
+        raise ValueError("Task fields must not exceed 4000 characters")
     return text or None
 
 
 def parse_date(value):
     """Invalid dates stay unknown. We never guess a deadline."""
     try:
-        return date.fromisoformat(value) if value else None
+        if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+            return None
+        return date.fromisoformat(value)
     except ValueError:
         return None
 
@@ -49,6 +56,7 @@ class Task:
             "working on it": "Working on it",
             "not started": "Not Started",
         }
+        updated = parse_date(clean(data.get("last_update")))
         return cls(
             task_id=task_id.upper(),
             project=clean(data.get("project")) or "",
@@ -57,7 +65,7 @@ class Task:
             due_date=parse_date(due_raw),
             due_raw=due_raw,
             status=statuses.get(status, "Unknown"),
-            last_update=clean(data.get("last_update")),
+            last_update=updated.isoformat() if updated else None,
             notes=clean(data.get("notes")) or "",
         )
 

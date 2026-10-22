@@ -42,6 +42,8 @@ python main.py --db .data/failure_demo.sqlite \
 
 Notice `reconciled_after_timeout` in the audit events and only one delivery for each operation ID. Both reads and sends have at most **3 attempts**, with short exponential backoff. Non-retryable 4xx errors are not retried.
 
+The CLI exits with code `1` when any delivery fails, after writing both reports. Invalid arguments exit with code `2`. Run again with the same database to retry failed actions without duplicating successful ones. On PowerShell, put the demo command on one line instead of using Bash backslashes.
+
 ## Optional real LLM
 
 The default is a deterministic local interpreter: no API key, network request, or cost.
@@ -55,6 +57,8 @@ python main.py --llm claude --db .data/claude_demo.sqlite
 `ClaudeInterpreter` calls the Claude Messages API to **classify non-empty notes**, not to change task facts or send messages. It uses a small JSON Schema (`output_config.format`) to restrict output to a single blocker category. It accepts only `{"blocker_type":"none|materials|upstream"}` (one of these three exact values). Extra fields, invalid JSON, errors, or unsupported values trigger a safe deterministic fallback. Instructions inside task notes are treated as untrusted text. Message text is always assembled by Python from verified task fields, not copied from LLM output. The built-in HTTP client uses only Python standard libraries; Claude Code CLI is not needed.
 
 The `.env.example` file lists the environment variable names; the app does not automatically load `.env` files. Export the values in your shell before running. Check `.data/delivery_log.json` for `llm_fallback` events if Claude is unavailable or returns an unusable response. Live API calls may cost money. The automated tests mock the network and do not require an API key.
+
+In PowerShell, use `$env:ANTHROPIC_API_KEY = "your_key_here"`. Only notes are sent to Anthropic, but notes can contain sensitive information; the Claude option is an explicit external-data boundary. The HTTP adapter refuses redirects, bounds response size to 64 KiB, and closes error responses. Local reports contain task titles and recipient names: treat them and the SQLite database as sensitive operational data.
 
 ## How to read the code
 
@@ -90,9 +94,15 @@ The 7-day escalation threshold and `coordination_queue` are explicit demo assump
 
 For an action, `Task.fingerprint()` hashes the normalized task state together with the decision and target. That becomes the **stable operation ID**. The fake delivery server stores this ID as a unique SQLite primary key.
 
+Before this step, the interpreted blocker is persisted by normalized task state. Repeated runs reuse it instead of querying a possibly inconsistent model. Concurrent workers use the first stored classification. A fallback result is also pinned until the task changes; this favors stable actions over automatically reclassifying after provider recovery. Date rules are still recomputed, so an overdue reminder may later become an escalation. Existing databases gain the classification table automatically, but old deliveries lack classification history: review them before switching provider on a pre-upgrade database.
+
 The service checks the mock remote receipt **before** sending. After a timeout or transient error, it checks that receipt again before retrying. When the mock server commits a delivery but the response is lost, reconciliation finds the existing receipt and prevents a second send. Restarting the program or changing only the AI response does not create another send for the same task/action/state. A real change to task state can create a new follow-up.
 
 Duplicate task IDs or tasks with no ID cause ingestion to fail **before any messages are sent**. All outbound messages and audit events are local; no real recipient addresses are required.
+
+All supplied task fields must be strings or null, with at most 4,000 characters per field. Invalid types abort ingestion before any sends. IDs are trimmed and uppercased. Dates must use `YYYY-MM-DD`; invalid due dates trigger clarification, and invalid last updates become unknown. Last update is part of the state, not a separate staleness rule. The fallback recognizes a small set of English blocker phrases and conservatively skips negated/resolved clauses; it is not a general language parser. A JSON Schema constrains model output shape, not semantic truth or all possible prompt injections.
+
+Fixture, database, and both report paths must differ. Reports are replaced atomically one at a time; they are snapshots, while SQLite receipts remain the source of truth after a crash. The two reports are not one transaction.
 
 ## Assumptions and limits
 
@@ -102,4 +112,4 @@ Duplicate task IDs or tasks with no ID cause ingestion to fail **before any mess
 - The sample SQLite mock server supports deduplication and lookup by operation ID. A real messaging provider must support an idempotency key or a reliable reconciliation endpoint; without that, exactly-once delivery cannot be guaranteed after an ambiguous timeout.
 - For production and ~10,000 tasks/day: use a durable worker queue/outbox, separate delivery service, Postgres, structured metrics/alerts, bounded LLM concurrency and budgets, secret management, authenticated APIs, and appropriate access controls. Add a retry/dead-letter policy for persistent failures. The demo does not implement those infrastructure pieces.
 
-No private keys or real customer data are included.
+The review found no private-key, Anthropic-key, GitHub-token, or AWS-access-key pattern matches in the fetched Git history. This targeted scan cannot prove the absence of every possible secret.

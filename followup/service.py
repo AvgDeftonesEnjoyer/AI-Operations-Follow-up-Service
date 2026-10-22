@@ -74,10 +74,14 @@ class Service:
         for task in self.fetch_tasks():
             # Missing fields and completed tasks never need a model request.
             blocker = "none"
-            if task.status != "Done" and task.owner and task.due_date and task.notes:
-                blocker, fell_back = interpret_safely(self.ai, task.notes)
-                if fell_back:
-                    self.store.log("llm_fallback", detail=f"Task {task.task_id}")
+            if task.status not in {"Done", "Unknown"} and task.owner and task.due_date and task.notes:
+                state_id = task.fingerprint(None, None)
+                blocker = self.store.get_classification(state_id)
+                if blocker is None:
+                    blocker, fell_back = interpret_safely(self.ai, task.notes)
+                    blocker = self.store.save_classification(state_id, blocker)
+                    if fell_back:
+                        self.store.log("llm_fallback", detail=f"Task {task.task_id}")
 
             action = decide(task, self.today, blocker)
             if action.decision == "no_action":
