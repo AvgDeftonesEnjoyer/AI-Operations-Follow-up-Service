@@ -11,8 +11,10 @@ from tempfile import TemporaryDirectory
 from threading import Barrier
 import unittest
 from unittest.mock import Mock, patch
+from urllib import error
 
-from followup.ai import AIError, ClaudeInterpreter, NoRedirects, simple_interpretation
+from followup.ai import (AIError, ClaudeInterpreter, NoRedirects, StubAI, interpret_safely,
+                         simple_interpretation)
 from followup.api import DeliveryAPI, TaskAPI
 from followup.models import Task
 from followup.service import Service
@@ -156,6 +158,29 @@ class RegressionTests(unittest.TestCase):
         self.assertTrue(all(row["delivery_status"] == "already_sent" for row in again))
         self.assertEqual(len(self.store.deliveries()), len(cases))
 
+    def test_qualifier_applies_only_to_its_own_blocker(self):
+        # A future deadline makes the decision depend only on the blocker read from the note.
+        decision_for = {"none": "no_action", "materials": "request_eta", "upstream": "escalate"}
+        cases = [
+            ("Awaiting materials from warehouse, now resolved.", "none"),
+            ("Awaiting materials from warehouse, all materials delivered today.", "none"),
+            ("Awaiting materials from warehouse if the delivery slips.", "none"),
+            ("Awaiting materials from warehouse, no ETA.", "materials"),
+            ("Backorder resolved, but awaiting materials from warehouse.", "materials"),
+            ("Backorder resolved. Waiting for permit approval.", "upstream"),
+            ("Awaiting materials from warehouse, not delivered yet.", "materials"),
+            ("Awaiting materials from warehouse, please confirm ETA if possible.", "materials"),
+            ("Waiting for permit approval, materials delivered.", "upstream"),
+        ]
+        self.fixture.write_text(json.dumps([
+            {**ROW, "task_id": str(index), "due_date": "2026-10-30", "notes": notes}
+            for index, (notes, _) in enumerate(cases)
+        ]), encoding="utf-8")
+        for result, (notes, blocker) in zip(self.run_service(StubAI()), cases):
+            with self.subTest(notes=notes):
+                self.assertEqual(simple_interpretation(notes), blocker)
+                self.assertEqual(result["decision"], decision_for[blocker])
+
     def test_provider_failure_uses_corrected_note_fallback(self):
         self.fixture.write_text(json.dumps([
             {**ROW, "notes": "Awaiting materials from warehouse, no update yet."}
@@ -164,6 +189,44 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual((result[0]["decision"], result[0]["target"]),
                          ("request_eta", "warehouse"))
         self.assertTrue(any(event["event"] == "llm_fallback" for event in self.store.events()))
+
+    def test_fallback_reason_is_a_short_category(self):
+        def http_error(code):
+            return error.HTTPError("https://api.anthropic.com/v1/messages", code, "error", {}, None)
+
+        def response(text='{"blocker_type":"materials"}', stop_reason="end_turn", blocks=None):
+            blocks = blocks if blocks is not None else [{"type": "text", "text": text}]
+            return BytesIO(json.dumps({"stop_reason": stop_reason, "content": blocks}).encode())
+
+        cases = [
+            ({"side_effect": http_error(401)}, "http_401"),
+            ({"side_effect": http_error(429)}, "http_429"),
+            ({"side_effect": TimeoutError()}, "timeout"),
+            ({"side_effect": error.URLError(TimeoutError())}, "timeout"),
+            ({"side_effect": error.URLError(ConnectionRefusedError())}, "network_error"),
+            ({"return_value": response("not json")}, "invalid_json"),
+            ({"return_value": response('{"blocker_type":"materials","status":"Done"}')}, "invalid_schema"),
+            ({"return_value": response('{"blocker_type":"urgent"}')}, "invalid_schema"),
+            ({"return_value": response(stop_reason="max_tokens")}, "truncated_output"),
+            ({"return_value": response(stop_reason="refusal")}, "refusal"),
+            ({"return_value": response(blocks=[{"type": "tool_use"}])}, "unsupported_content"),
+        ]
+        for http_behavior, reason in cases:
+            with self.subTest(reason=reason):
+                with patch("urllib.request.OpenerDirector.open", **http_behavior):
+                    result = interpret_safely(ClaudeInterpreter(api_key="test-key"),
+                                              "Awaiting materials from warehouse")
+                # The batch keeps working on the deterministic fallback.
+                self.assertEqual(result, ("materials", reason))
+
+    def test_unexpected_provider_error_never_leaks_into_the_log(self):
+        secret = "sk-ant-api03-SECRET"
+        ai = Mock(interpret=Mock(side_effect=RuntimeError(f"bad key {secret}")))
+        result = self.run_service(ai)
+        self.assertEqual(result[0]["decision"], "follow_up_owner")
+        fallbacks = [e for e in self.store.events() if e["event"] == "llm_fallback"]
+        self.assertEqual([e["detail"] for e in fallbacks], ["Task A; reason=provider_error"])
+        self.assertNotIn(secret, json.dumps(self.store.events()))
 
     def test_concurrent_replay_is_logged_as_already_sent(self):
         barrier = Barrier(2)

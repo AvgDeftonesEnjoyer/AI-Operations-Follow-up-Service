@@ -28,6 +28,11 @@ BLOCKER_SCHEMA = {
 class AIError(Exception):
     """The model is unavailable or returned an invalid answer."""
 
+    def __init__(self, message: str, reason: str = "provider_error"):
+        super().__init__(message)
+        # A short fixed category for the audit log, never provider text or secrets.
+        self.reason = reason
+
 
 class StubAI:
     def interpret(self, notes: str) -> str:
@@ -80,42 +85,52 @@ class ClaudeInterpreter:
             with self.http.open(http_request, timeout=15) as response:
                 raw = response.read(65537)
                 if len(raw) > 65536:
-                    raise AIError("Claude response exceeds size limit")
+                    raise AIError("Claude response exceeds size limit", "oversized_response")
                 payload = json.loads(raw)
             # A refusal or truncated response is not usable, even if it contains JSON.
             if payload["stop_reason"] != "end_turn":
-                raise AIError("Claude did not finish its classification")
+                reason = {"max_tokens": "truncated_output", "refusal": "refusal"}.get(
+                    payload["stop_reason"], "unsupported_content")
+                raise AIError("Claude did not finish its classification", reason)
             blocks = payload["content"]
             if not isinstance(blocks, list) or any(
                 not isinstance(block, dict)
                 or block.get("type") not in {"text", "thinking", "redacted_thinking"}
                 for block in blocks
             ):
-                raise AIError("Claude returned unsupported content blocks")
+                raise AIError("Claude returned unsupported content blocks", "unsupported_content")
             texts = [block["text"] for block in blocks if block["type"] == "text"]
             if len(texts) != 1:
-                raise AIError("Claude did not return one text block")
+                raise AIError("Claude did not return one text block", "unsupported_content")
             result = json.loads(texts[0])
-        except (error.HTTPError, error.URLError, TimeoutError, ValueError,
-                KeyError, IndexError, TypeError) as exc:
-            if isinstance(exc, error.HTTPError):
-                exc.close()
-            raise AIError(f"Claude request or response failed: {type(exc).__name__}") from exc
+        except error.HTTPError as exc:
+            exc.close()
+            raise AIError(f"Claude returned HTTP {exc.code}", f"http_{exc.code}") from exc
+        except OSError as exc:  # URLError, timeouts, and dropped connections.
+            cause = getattr(exc, "reason", exc)  # URLError wraps the real cause.
+            reason = "timeout" if isinstance(cause, TimeoutError) else "network_error"
+            raise AIError(f"Claude request failed: {reason}", reason) from exc
+        except ValueError as exc:
+            raise AIError("Claude returned invalid JSON", "invalid_json") from exc
+        except (KeyError, IndexError, TypeError) as exc:
+            raise AIError("Claude response has an unexpected shape", "invalid_schema") from exc
 
         # Validate again locally. Never trust an external response blindly.
         if not isinstance(result, dict) or set(result) != {"blocker_type"}:
-            raise AIError("Claude returned unexpected JSON fields")
+            raise AIError("Claude returned unexpected JSON fields", "invalid_schema")
         if not isinstance(result["blocker_type"], str) or result["blocker_type"] not in BLOCKER_TYPES:
-            raise AIError("Claude returned an unapproved blocker type")
+            raise AIError("Claude returned an unapproved blocker type", "invalid_schema")
         return result["blocker_type"]
 
 
-def interpret_safely(ai, notes: str) -> tuple[str, bool]:
-    """Return (blocker_type, used_fallback); never expose AI-generated actions."""
+def interpret_safely(ai, notes: str) -> tuple[str, str | None]:
+    """Return (blocker_type, fallback_reason); the reason is None when the model answer is used."""
     try:
         label = ai.interpret(notes)
-        if label not in BLOCKER_TYPES:
-            raise AIError("Invalid blocker type")
-        return label, False
-    except Exception:  # Bad provider responses must not stop the batch.
-        return simple_interpretation(notes), True
+    except AIError as exc:  # Bad provider responses must not stop the batch.
+        return simple_interpretation(notes), exc.reason
+    except Exception:  # Unknown errors may carry secrets in their text, so log only a category.
+        return simple_interpretation(notes), "provider_error"
+    if not isinstance(label, str) or label not in BLOCKER_TYPES:
+        return simple_interpretation(notes), "invalid_schema"
+    return label, None

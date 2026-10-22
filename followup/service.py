@@ -70,8 +70,8 @@ class Service:
 
         return "failed"
 
-    def run(self):
-        results = []
+    def iter_results(self):
+        """Yield each result as soon as it is final, so a later failure cannot erase it."""
         for task in self.fetch_tasks():
             # Missing fields and completed tasks never need a model request.
             blocker = "none"
@@ -79,19 +79,22 @@ class Service:
                 state_id = task.fingerprint(None, None)
                 blocker = self.store.get_classification(state_id)
                 if blocker is None:
-                    blocker, fell_back = interpret_safely(self.ai, task.notes)
+                    blocker, fallback_reason = interpret_safely(self.ai, task.notes)
                     blocker = self.store.save_classification(state_id, blocker)
-                    if fell_back:
-                        self.store.log("llm_fallback", detail=f"Task {task.task_id}")
+                    if fallback_reason is not None:
+                        self.store.log("llm_fallback",
+                                       detail=f"Task {task.task_id}; reason={fallback_reason}")
 
             action = decide(task, self.today, blocker)
             if action.decision == "no_action":
-                results.append(action.to_dict("not_needed"))
+                yield action.to_dict("not_needed")
                 continue
 
             action = replace(
                 action, operation_id=task.fingerprint(action.decision, action.target)
             )
             status = self.deliver(action)
-            results.append(action.to_dict(status))
-        return results
+            yield action.to_dict(status)
+
+    def run(self):
+        return list(self.iter_results())
