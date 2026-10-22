@@ -52,9 +52,10 @@ class Service:
 
         for attempt in range(1, MAX_ATTEMPTS + 1):
             try:
-                self.delivery_api.send(key, body)
-                self.store.log("sent", key)
-                return "sent"
+                created = self.delivery_api.send(key, body)
+                status = "sent" if created else "already_sent"
+                self.store.log(status, key)
+                return status
             except (APIError, AmbiguousTimeout) as error:
                 # Even a timeout is ambiguous: look up the stable operation ID.
                 if self.delivery_api.lookup(key) is not None:

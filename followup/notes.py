@@ -15,24 +15,30 @@ UPSTREAM = re.compile(
 
 def active_clauses(notes: str):
     """Yield recognized candidate clauses, skipping hypothetical/resolved text."""
-    for clause in re.split(r"[.!?;\n]+", notes.casefold()):
-        # Missing updates or ETAs do not negate a dependency.
-        text = re.sub(r"\bno (?:eta|delivery date|updates?)\b", "", clause)
-        if re.search(r"\b(if|unless|might|could|hypothetical)\b", text):
+    for sentence in re.split(r"[.!?;\n]+", notes.casefold()):
+        # Keep a leading condition attached to the whole sentence.
+        if re.match(r"\s*(if|unless|in case)\b", sentence):
             continue
-        if re.search(r"\b(no|not|never|resolved|delivered|cleared|completed)\b", text):
-            continue
-        yield text
+        for clause in re.split(r",|\b(?:but|however)\b", sentence):
+            # Missing updates or ETAs do not negate a dependency.
+            text = re.sub(r"\bno (?:eta|delivery date|updates?)\b", "", clause)
+            # A polite request (could you/we...) is not a hypothetical blocker.
+            if re.search(r"\b(?:might|may|could)\s+(?!(?:you|we)\b)|\bhypothetical\b", text):
+                continue
+            if re.search(r"\b(no|not|never|resolved|delivered|cleared|completed)\b", text):
+                continue
+            yield text
 
 
 def simple_interpretation(notes: str) -> str:
     """Recognize a few explicit blockers; unknown language stays unknown."""
+    upstream = False
     for clause in active_clauses(notes):
         if MATERIALS.search(clause):
             return "materials"
         if UPSTREAM.search(clause):
-            return "upstream"
-    return "none"
+            upstream = True
+    return "upstream" if upstream else "none"
 
 
 def warehouse_dependency(notes: str) -> bool:
@@ -40,8 +46,8 @@ def warehouse_dependency(notes: str) -> bool:
     for clause in active_clauses(notes):
         if not MATERIALS.search(clause):
             continue
-        if re.search(r"\bfrom (?:the )?warehouse\b", clause):
+        if re.search(r"\b(?:awaiting|waiting for) materials from (?:the )?warehouse\b", clause):
             return True
-        if re.search(r"\bwarehouse (?:confirmed )?backorder(?:ed)?\b", clause):
+        if re.match(r"\s*(?:the )?warehouse (?:confirmed )?backorder(?:ed)?\b", clause):
             return True
     return False

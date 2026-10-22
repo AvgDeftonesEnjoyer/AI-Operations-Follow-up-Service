@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
+from threading import Barrier
 import unittest
 from unittest.mock import Mock, patch
 
@@ -133,6 +134,15 @@ class RegressionTests(unittest.TestCase):
             ("Warehouse confirmed backorder, no ETA.", "request_eta", "warehouse"),
             ("No material shortage.", "follow_up_owner", "Sam"),
             ("Warehouse delivered all materials.", "follow_up_owner", "Sam"),
+            ("Awaiting materials from warehouse, could you confirm ETA?", "request_eta", "warehouse"),
+            ("Could you confirm ETA for awaiting materials from warehouse?", "request_eta", "warehouse"),
+            ("Backorder resolved, but awaiting materials from warehouse.", "request_eta", "warehouse"),
+            ("Awaiting materials from supplier, update from warehouse pending.", "request_eta", "Sam"),
+            ("Awaiting materials from supplier and an update from warehouse.", "request_eta", "Sam"),
+            ("Waiting for permit approval. Awaiting materials from warehouse.", "request_eta", "warehouse"),
+            ("Awaiting materials from warehouse. Waiting for permit approval.", "request_eta", "warehouse"),
+            ("If the work slips, awaiting materials from warehouse could be a problem.", "follow_up_owner", "Sam"),
+            ("Warehouse could confirm backorder tomorrow.", "follow_up_owner", "Sam"),
         ]
         self.fixture.write_text(json.dumps([
             {**ROW, "task_id": str(index), "notes": notes}
@@ -155,6 +165,54 @@ class RegressionTests(unittest.TestCase):
                          ("request_eta", "warehouse"))
         self.assertTrue(any(event["event"] == "llm_fallback" for event in self.store.events()))
 
+    def test_concurrent_replay_is_logged_as_already_sent(self):
+        barrier = Barrier(2)
+
+        class SynchronizedDelivery(DeliveryAPI):
+            first_lookup = True
+
+            def lookup(self, key):
+                result = super().lookup(key)
+                if self.first_lookup:
+                    self.first_lookup = False
+                    barrier.wait(timeout=10)
+                return result
+
+        def worker(_):
+            store = Store(str(self.db))
+            try:
+                return Service(TaskAPI(str(self.fixture)), SynchronizedDelivery(store), store,
+                               Mock(interpret=Mock(return_value="none")), TODAY).run()[0]
+            finally:
+                store.close()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(worker, range(2)))
+        self.assertCountEqual([row["delivery_status"] for row in results], ["sent", "already_sent"])
+        self.assertEqual(len(self.store.deliveries()), 1)
+        self.assertCountEqual([event["event"] for event in self.store.events()], ["sent", "already_sent"])
+
+    def test_claude_accepts_text_with_thinking_blocks(self):
+        text = {"type": "text", "text": '{"blocker_type":"materials"}'}
+        thinking = {"type": "thinking", "thinking": "", "signature": "test"}
+        redacted = {"type": "redacted_thinking", "data": "test"}
+        for blocks in [[thinking, text], [text, thinking], [thinking, redacted, text]]:
+            with self.subTest(blocks=blocks):
+                response = BytesIO(json.dumps({"stop_reason": "end_turn", "content": blocks}).encode())
+                with patch("urllib.request.OpenerDirector.open", return_value=response):
+                    self.assertEqual(ClaudeInterpreter(api_key="test-key").interpret("Ambiguous note"),
+                                     "materials")
+
+    def test_claude_rejects_ambiguous_or_unsupported_content(self):
+        text = {"type": "text", "text": '{"blocker_type":"materials"}'}
+        for blocks in [[], [text, text], [{"type": "thinking"}],
+                       [text, {"type": "tool_use"}], [None], {}, "text"]:
+            with self.subTest(blocks=blocks):
+                response = BytesIO(json.dumps({"stop_reason": "end_turn", "content": blocks}).encode())
+                with patch("urllib.request.OpenerDirector.open", return_value=response):
+                    with self.assertRaises(AIError):
+                        ClaudeInterpreter(api_key="test-key").interpret("Ambiguous note")
+
     def cli(self, *extra):
         return subprocess.run([sys.executable, str(ROOT / "main.py"),
                                "--fixture", str(self.fixture), "--db", str(self.db),
@@ -169,6 +227,34 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(report["decisions"][0]["delivery_status"], "failed")
         self.assertEqual(self.cli().returncode, 0)
         self.assertEqual(len(self.store.deliveries()), 1)
+
+    def test_fatal_read_replaces_stale_reports_with_failed_run(self):
+        self.assertEqual(self.cli().returncode, 0)
+        previous = json.loads((self.root / "decisions.json").read_text())["run"]
+        result = self.cli("--read-failures", "503,503,503")
+        self.assertEqual(result.returncode, 1)
+        decisions = json.loads((self.root / "decisions.json").read_text())
+        log = json.loads((self.root / "log.json").read_text())
+        self.assertEqual(decisions["run"], log["run"])
+        self.assertNotEqual(previous["id"], decisions["run"]["id"])
+        self.assertEqual(decisions["run"]["status"], "failed")
+        self.assertEqual(decisions["run"]["error"], "APIError")
+        self.assertEqual(decisions["decisions"], [])
+        self.assertEqual(log["events"][-1]["event"], "run_failed")
+        self.assertEqual(len(log["deliveries"]), 1)
+        self.assertEqual(self.cli().returncode, 0)
+        recovered = json.loads((self.root / "decisions.json").read_text())
+        self.assertEqual(recovered["run"]["status"], "completed")
+        self.assertEqual(recovered["decisions"][0]["delivery_status"], "already_sent")
+
+    def test_invalid_input_failure_is_reported_without_echoing_data(self):
+        self.fixture.write_text('{"private": "do-not-log"}', encoding="utf-8")
+        result = self.cli()
+        self.assertEqual(result.returncode, 1)
+        report = (self.root / "log.json").read_text()
+        self.assertNotIn("do-not-log", report + result.stdout + result.stderr)
+        self.assertEqual(json.loads(report)["run"]["error"], "ValueError")
+        self.assertEqual(self.store.deliveries(), [])
 
     def test_exhausted_send_retries_are_bounded(self):
         sender = DeliveryAPI(self.store, fail_first=[503] * 5)

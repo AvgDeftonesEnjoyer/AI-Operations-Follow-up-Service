@@ -44,19 +44,25 @@ Notice `reconciled_after_timeout` in the audit events and only one delivery for 
 
 The CLI exits with code `1` when any delivery fails, after writing both reports. Invalid arguments exit with code `2`. Run again with the same database to retry failed actions without duplicating successful ones. On PowerShell, put the demo command on one line instead of using Bash backslashes.
 
+Both reports include the same `run` ID, start/finish timestamps, status, and error category. An ingestion or setup failure after opening the database writes a failed run with an empty decisions list, so old successful reports are not mistaken for current results. Existing delivery receipts remain in the audit report. Database/output filesystem failures can still prevent reports from being written and produce a nonzero exit.
+
 ## Optional real LLM
 
 The default is a deterministic local interpreter: no API key, network request, or cost.
 
 ```bash
 export ANTHROPIC_API_KEY="your_key_here"
-export ANTHROPIC_MODEL="claude-haiku-5-5"  # optional
+export ANTHROPIC_MODEL="claude-sonnet-5-5"  # optional; this is the default API model
 python main.py --llm claude --db .data/claude_demo.sqlite
 ```
 
 `ClaudeInterpreter` calls the Claude Messages API to **classify non-empty notes**, not to change task facts or send messages. It uses a small JSON Schema (`output_config.format`) to restrict output to a single blocker category. It accepts only `{"blocker_type":"none|materials|upstream"}` (one of these three exact values). Extra fields, invalid JSON, errors, or unsupported values trigger a safe deterministic fallback. Instructions inside task notes are treated as untrusted text. Message text is always assembled by Python from verified task fields, not copied from LLM output. The built-in HTTP client uses only Python standard libraries; Claude Code CLI is not needed.
 
 The `.env.example` file lists the environment variable names; the app does not automatically load `.env` files. Export the values in your shell before running. Check `.data/delivery_log.json` for `llm_fallback` events if Claude is unavailable or returns an unusable response. Live API calls may cost money. The automated tests mock the network and do not require an API key.
+
+Sonnet 5.5 is the default for `--llm claude`. Set `ANTHROPIC_MODEL=claude-opus-5-5` to use Opus instead. Model selection does not change the business rules or validation. The default CLI mode is still the offline stub; selecting a model does not enable network calls by itself. Cached classifications are reused even when the model changes, so compare models using separate demo databases. No live quality comparison between these models has been run for this project.
+
+Claude may return thinking blocks before its answer. The adapter ignores `thinking` and `redacted_thinking` blocks and requires exactly one final `text` block with valid classification JSON. Requests use low effort and a 1,024-token output budget to leave room for thinking. Refusals, truncated output, extra text blocks, or unsupported block types still trigger fallback.
 
 In PowerShell, use `$env:ANTHROPIC_API_KEY = "your_key_here"`. Only notes are sent to Anthropic, but notes can contain sensitive information; the Claude option is an explicit external-data boundary. The HTTP adapter refuses redirects, bounds response size to 64 KiB, and closes error responses. Local reports contain task titles and recipient names: treat them and the SQLite database as sensitive operational data.
 
@@ -92,6 +98,8 @@ The 7-day escalation threshold and `coordination_queue` are explicit demo assump
 
 `followup/notes.py` holds the small phrase rules shared by the offline interpreter and warehouse routing. A valid model classification is used as returned; phrase matching is the fallback, not an override. Hypothetical or resolved clauses are skipped, and “no update” or “no ETA” does not negate an active blocker. Merely mentioning warehouse does not select it as the recipient.
 
+The offline rules examine all active clauses before selecting upstream; materials take priority regardless of sentence order. Commas and “but/however” separate clauses, while a leading conditional applies to its whole sentence. A polite “could you” is not treated as a hypothetical dependency. Warehouse routing requires a recognized direct phrase such as “awaiting materials from warehouse” or “warehouse confirmed backorder”; otherwise the known owner receives the ETA request. These are deliberately small English phrase rules, not a general language parser.
+
 Existing databases keep their cached classifications and delivery history. To evaluate changed note rules from scratch, use a separate demo database; do not delete operational delivery history to force reclassification. Changing routing rules can change the action target and therefore its operation ID, so review previously processed tasks before applying rule changes to an existing operational database.
 
 ### Why repeated runs are safe
@@ -101,6 +109,8 @@ For an action, `Task.fingerprint()` hashes the normalized task state together wi
 Before this step, the interpreted blocker is persisted by normalized task state. Repeated runs reuse it instead of querying a possibly inconsistent model. Concurrent workers use the first stored classification. A fallback result is also pinned until the task changes; this favors stable actions over automatically reclassifying after provider recovery. Date rules are still recomputed, so an overdue reminder may later become an escalation. Existing databases gain the classification table automatically, but old deliveries lack classification history: review them before switching provider on a pre-upgrade database.
 
 The service checks the mock remote receipt **before** sending. After a timeout or transient error, it checks that receipt again before retrying. When the mock server commits a delivery but the response is lost, reconciliation finds the existing receipt and prevents a second send. Restarting the program or changing only the AI response does not create another send for the same task/action/state. A real change to task state can create a new follow-up.
+
+The mock send API returns whether it created a receipt. If another worker won the race after the initial lookup, the replay is logged as `already_sent`, so delivery counts and audit events agree.
 
 Duplicate task IDs or tasks with no ID cause ingestion to fail **before any messages are sent**. All outbound messages and audit events are local; no real recipient addresses are required.
 
