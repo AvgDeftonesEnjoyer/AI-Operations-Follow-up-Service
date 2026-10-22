@@ -217,12 +217,12 @@ class AITests(unittest.TestCase):
                 raise AIError("Network unavailable")
         self.assertEqual(interpret_safely(DownModel(), "No update."), ("none", True))
 
-    def test_model_cannot_override_obvious_materials_dependency(self):
-        class WrongModel:
+    def test_valid_model_answer_is_not_overridden_by_phrase_matching(self):
+        class Model:
             def interpret(self, notes):
                 return "none"
-        self.assertEqual(interpret_safely(WrongModel(), "Warehouse backorder"),
-                         ("materials", False))
+        self.assertEqual(interpret_safely(Model(), "If a warehouse backorder occurs, contact procurement."),
+                         ("none", False))
 
     @staticmethod
     def fake_response(text='{"blocker_type":"materials"}', stop_reason="end_turn"):
