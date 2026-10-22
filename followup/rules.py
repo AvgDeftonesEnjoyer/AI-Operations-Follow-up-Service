@@ -1,9 +1,9 @@
 """Business rules. AI can label notes, but it never changes task facts."""
 
 from datetime import date
-import re
 
 from .models import Action, Task
+from .notes import warehouse_dependency
 
 
 ESCALATE_AFTER_DAYS = 7
@@ -37,8 +37,8 @@ def decide(task: Task, today: date, blocker: str = "none") -> Action:
         )
 
     if blocker == "materials":
-        # Route to warehouse only when it was explicitly named in the note.
-        target = "warehouse" if re.search(r"\bwarehouse\b", task.notes, re.I) else task.owner
+        # A mention alone does not make the warehouse responsible.
+        target = "warehouse" if warehouse_dependency(task.notes) else task.owner
         return Action(
             task.task_id, "request_eta", target, "Materials dependency",
             f"Please confirm the material delivery ETA for '{task.title}'.",

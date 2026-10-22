@@ -2,8 +2,9 @@
 
 import json
 import os
-import re
 from urllib import error, request
+
+from .notes import simple_interpretation
 
 
 BLOCKER_TYPES = {"none", "materials", "upstream"}
@@ -26,20 +27,6 @@ BLOCKER_SCHEMA = {
 
 class AIError(Exception):
     """The model is unavailable or returned an invalid answer."""
-
-
-def simple_interpretation(notes: str) -> str:
-    """Fallback for offline runs and failed Claude requests."""
-    for text in re.split(r"[.!?;\n]+", notes.casefold()):
-        # This is deliberately conservative, not a natural-language parser.
-        without_eta = re.sub(r"\bno (eta|delivery date)\b", "", text)
-        if re.search(r"\b(no|not|never|resolved|delivered|cleared|completed)\b", without_eta):
-            continue
-        if re.search(r"\b(backorder(?:ed)?|awaiting materials|waiting for materials|materials? shortage|materials? delay(?:ed)?)\b", text):
-            return "materials"
-        if re.search(r"\b(awaiting|waiting (?:for|on)|blocked by|dependent on|cannot proceed until|unable to proceed until)\b", text):
-            return "upstream"
-    return "none"
 
 
 class StubAI:
@@ -121,8 +108,6 @@ def interpret_safely(ai, notes: str) -> tuple[str, bool]:
         label = ai.interpret(notes)
         if label not in BLOCKER_TYPES:
             raise AIError("Invalid blocker type")
-        # A clear, recognized blocker cannot be overridden by an LLM.
-        fallback = simple_interpretation(notes)
-        return (fallback if fallback != "none" else label), False
+        return label, False
     except Exception:  # Bad provider responses must not stop the batch.
         return simple_interpretation(notes), True

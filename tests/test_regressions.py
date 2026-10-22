@@ -121,6 +121,40 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(results[0][0]["operation_id"], results[1][0]["operation_id"])
         self.assertEqual(len(self.store.deliveries()), 1)
 
+    def test_note_edge_cases_produce_safe_actions_and_no_duplicates(self):
+        from followup.ai import StubAI
+
+        cases = [
+            ("If a warehouse backorder occurs, contact procurement.", "follow_up_owner", "Sam"),
+            ("Awaiting materials from supplier. Warehouse is not involved.", "request_eta", "Sam"),
+            ("Awaiting materials from warehouse, no update yet.", "request_eta", "warehouse"),
+            ("Awaiting materials from warehouse; no ETA.", "request_eta", "warehouse"),
+            ("Warehouse backorder resolved. Awaiting materials from supplier.", "request_eta", "Sam"),
+            ("Warehouse confirmed backorder, no ETA.", "request_eta", "warehouse"),
+            ("No material shortage.", "follow_up_owner", "Sam"),
+            ("Warehouse delivered all materials.", "follow_up_owner", "Sam"),
+        ]
+        self.fixture.write_text(json.dumps([
+            {**ROW, "task_id": str(index), "notes": notes}
+            for index, (notes, _, _) in enumerate(cases)
+        ]), encoding="utf-8")
+        results = self.run_service(StubAI())
+        for result, (notes, decision, target) in zip(results, cases):
+            with self.subTest(notes=notes):
+                self.assertEqual((result["decision"], result["target"]), (decision, target))
+        again = self.run_service(StubAI())
+        self.assertTrue(all(row["delivery_status"] == "already_sent" for row in again))
+        self.assertEqual(len(self.store.deliveries()), len(cases))
+
+    def test_provider_failure_uses_corrected_note_fallback(self):
+        self.fixture.write_text(json.dumps([
+            {**ROW, "notes": "Awaiting materials from warehouse, no update yet."}
+        ]), encoding="utf-8")
+        result = self.run_service(Mock(interpret=Mock(side_effect=AIError("Unavailable"))))
+        self.assertEqual((result[0]["decision"], result[0]["target"]),
+                         ("request_eta", "warehouse"))
+        self.assertTrue(any(event["event"] == "llm_fallback" for event in self.store.events()))
+
     def cli(self, *extra):
         return subprocess.run([sys.executable, str(ROOT / "main.py"),
                                "--fixture", str(self.fixture), "--db", str(self.db),

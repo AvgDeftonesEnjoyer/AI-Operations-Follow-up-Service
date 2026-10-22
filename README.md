@@ -82,13 +82,17 @@ Rules are applied in priority order:
 | Task is `Done` | `no_action` | none |
 | Missing owner | `clarify` | `coordination_queue` (a role, not a made-up person) |
 | Missing/invalid due date or unknown status | `clarify` | known owner |
-| Materials/warehouse dependency | `request_eta` | warehouse **only when named in notes**; otherwise known owner |
+| Materials/warehouse dependency | `request_eta` | warehouse only when an active materials clause explicitly links it to the dependency; otherwise known owner |
 | Blocked or waiting for upstream work | `escalate` | known owner |
 | At least 7 days overdue | `escalate` | known owner |
 | 1–6 days overdue | `follow_up_owner` | known owner |
 | Otherwise | `no_action` | none |
 
 The 7-day escalation threshold and `coordination_queue` are explicit demo assumptions in `followup/rules.py`. Only the provided structured fields determine owner, status, and due date; notes may provide a blocker category. Invalid or missing dates are never guessed. Completed tasks do not generate follow-ups.
+
+`followup/notes.py` holds the small phrase rules shared by the offline interpreter and warehouse routing. A valid model classification is used as returned; phrase matching is the fallback, not an override. Hypothetical or resolved clauses are skipped, and “no update” or “no ETA” does not negate an active blocker. Merely mentioning warehouse does not select it as the recipient.
+
+Existing databases keep their cached classifications and delivery history. To evaluate changed note rules from scratch, use a separate demo database; do not delete operational delivery history to force reclassification. Changing routing rules can change the action target and therefore its operation ID, so review previously processed tasks before applying rule changes to an existing operational database.
 
 ### Why repeated runs are safe
 
