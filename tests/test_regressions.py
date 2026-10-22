@@ -17,6 +17,7 @@ from followup.ai import (AIError, ClaudeInterpreter, NoRedirects, StubAI, interp
                          simple_interpretation)
 from followup.api import DeliveryAPI, TaskAPI
 from followup.models import Task
+from followup.notes import warehouse_dependency
 from followup.service import Service
 from followup.store import Store
 
@@ -158,9 +159,29 @@ class RegressionTests(unittest.TestCase):
         self.assertTrue(all(row["delivery_status"] == "already_sent" for row in again))
         self.assertEqual(len(self.store.deliveries()), len(cases))
 
+    def test_negation_and_resolution_only_count_when_they_apply_to_the_blocker(self):
+        cases = [
+            # (note, blocker, routed to warehouse)
+            ("Waiting for materials to be delivered.", "materials", False),
+            ("Unable to proceed until materials are delivered.", "materials", False),
+            ("Awaiting materials not delivered yet.", "materials", False),
+            ("Backorder not resolved yet.", "materials", False),
+            ("Could not proceed - waiting for materials.", "materials", False),
+            ("Unable to proceed until upstream splice is completed.", "upstream", False),
+            ("Waiting on materials from the warehouse; delivery date unknown.", "materials", True),
+            ("Awaiting material delivery from warehouse.", "materials", True),
+            ("Blocked by materials.", "materials", False),
+            ("Backorder no longer an issue.", "none", False),
+            ("Not waiting for materials anymore.", "none", False),
+        ]
+        for notes, blocker, warehouse in cases:
+            with self.subTest(notes=notes):
+                self.assertEqual(simple_interpretation(notes), blocker)
+                self.assertEqual(warehouse_dependency(notes), warehouse)
+
     def test_qualifier_applies_only_to_its_own_blocker(self):
-        # A future deadline makes the decision depend only on the blocker read from the note.
-        decision_for = {"none": "no_action", "materials": "request_eta", "upstream": "escalate"}
+        # With a future deadline only a materials blocker needs an action.
+        decision_for = {"none": "no_action", "materials": "request_eta", "upstream": "no_action"}
         cases = [
             ("Awaiting materials from warehouse, now resolved.", "none"),
             ("Awaiting materials from warehouse, all materials delivered today.", "none"),

@@ -55,7 +55,7 @@ class ServiceTests(unittest.TestCase):
             "TC-1005": ("clarify", "Alex Brown"),
             "TC-1006": ("follow_up_owner", "Jamie Lee"),
             "TC-1007": ("no_action", None),
-            "TC-1008": ("escalate", "Chris Patel"),
+            "TC-1008": ("escalate", "coordination_queue"),
             "TC-1009": ("request_eta", "warehouse"),
             "TC-1010": ("no_action", None),
         }
@@ -180,12 +180,47 @@ class RuleTests(unittest.TestCase):
         self.assertEqual(decide(task(status="Not Started", due_date="2026-10-22"), TODAY).decision,
                          "no_action")
 
+    def test_placeholder_owner_is_treated_as_missing(self):
+        for owner in ["TBD", "unassigned", " N/A ", "-"]:
+            with self.subTest(owner=owner):
+                action = decide(task(assigned_to=owner), TODAY)
+                self.assertEqual((action.decision, action.target), ("clarify", "coordination_queue"))
+
     def test_overdue_escalation_threshold(self):
+        self.assertEqual(decide(task(due_date="2026-10-20"), TODAY).reason, "Overdue by 1 day")
         self.assertEqual(decide(task(due_date="2026-10-15"), TODAY).decision, "follow_up_owner")
-        self.assertEqual(decide(task(due_date="2026-10-14"), TODAY).decision, "escalate")
+        action = decide(task(due_date="2026-10-14"), TODAY)
+        # Escalation goes beyond the owner, who already received the follow-ups.
+        self.assertEqual((action.decision, action.target), ("escalate", "coordination_queue"))
+        self.assertIn("Sam", action.message)
 
     def test_blocked_without_materials_escalates(self):
         self.assertEqual(decide(task(status="Blocked"), TODAY).decision, "escalate")
+        self.assertEqual(decide(task(status="Blocked", due_date="2026-12-01"), TODAY).decision,
+                         "escalate")
+
+    def test_upstream_note_escalates_only_when_overdue(self):
+        on_time = task(status="Not Started", due_date="2026-12-15", notes="Waiting on survey crew")
+        self.assertEqual(decide(on_time, TODAY, blocker="upstream").decision, "no_action")
+        self.assertEqual(decide(task(notes="Waiting on survey crew"), TODAY, blocker="upstream").decision,
+                         "escalate")
+
+    def test_model_label_cannot_change_owner_or_silence_an_overdue_task(self):
+        # TC-1006 carries a prompt injection; whatever label comes back, the facts stay fixed.
+        for label in ["none", "materials", "upstream", "mark_all_complete"]:
+            with self.subTest(label=label):
+                with TemporaryDirectory() as directory:
+                    store = Store(str(Path(directory) / "state.sqlite"))
+                    try:
+                        model = type("Model", (), {"interpret": lambda self, notes: label})()
+                        results = Service(TaskAPI(str(FIXTURE)), DeliveryAPI(store), store,
+                                          model, TODAY).run()
+                    finally:
+                        store.close()
+                row = next(r for r in results if r["task_id"] == "TC-1006")
+                self.assertNotEqual(row["decision"], "no_action")
+                # The owner is the recipient, or is named in an escalation to the coordination role.
+                self.assertIn("Jamie Lee", f"{row['target']} {row['message']}")
 
     def test_material_dependency_without_named_warehouse_routes_to_owner(self):
         action = decide(task(notes="Supplier backorder"), TODAY, blocker="materials")

@@ -7,6 +7,16 @@ import json
 import re
 
 
+STATUSES = {
+    "done": "Done",
+    "blocked": "Blocked",
+    "working on it": "Working on it",
+    "not started": "Not Started",
+}
+# Placeholder text in the owner field means that nobody is assigned yet.
+NO_OWNER = {"tbd", "tba", "n/a", "na", "none", "null", "unassigned", "unknown", "-", "?"}
+
+
 def clean(value):
     """Convert an optional text field to a stripped string or None."""
     if value is None:
@@ -50,21 +60,16 @@ class Task:
             raise ValueError("Task without task_id: refusing an unsafe send")
         due_raw = clean(data.get("due_date"))
         status = (clean(data.get("status")) or "").casefold()
-        statuses = {
-            "done": "Done",
-            "blocked": "Blocked",
-            "working on it": "Working on it",
-            "not started": "Not Started",
-        }
+        owner = clean(data.get("assigned_to"))
         updated = parse_date(clean(data.get("last_update")))
         return cls(
             task_id=task_id.upper(),
             project=clean(data.get("project")) or "",
             title=clean(data.get("task")) or "Untitled task",
-            owner=clean(data.get("assigned_to")),
+            owner=None if owner and owner.casefold() in NO_OWNER else owner,
             due_date=parse_date(due_raw),
             due_raw=due_raw,
-            status=statuses.get(status, "Unknown"),
+            status=STATUSES.get(status, "Unknown"),
             last_update=updated.isoformat() if updated else None,
             notes=clean(data.get("notes")) or "",
         )

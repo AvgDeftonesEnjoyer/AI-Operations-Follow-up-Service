@@ -4,23 +4,34 @@ import re
 
 
 MATERIALS = re.compile(
-    r"\b(backorder(?:ed)?|awaiting materials|waiting for materials|"
-    r"materials? shortage|materials? delay(?:ed)?)\b"
+    r"\b(backorder(?:ed)?|"
+    r"(?:awaiting|waiting (?:for|on)|blocked by|pending|until) (?:the )?materials?|"
+    r"materials? (?:shortage|delay(?:ed)?))\b"
 )
 UPSTREAM = re.compile(
     r"\b(awaiting|waiting (?:for|on)|blocked by|dependent on|"
     r"cannot proceed until|unable to proceed until)\b"
 )
-NEGATION = re.compile(r"\b(no|not|never)\b")
-RESOLUTION = re.compile(r"\b(resolved|delivered|cleared|completed|received|arrived)\b")
+# "no material shortage", "not waiting for materials": the negation sits right before the blocker.
+NEGATED_BEFORE = re.compile(r"\b(?:no|not|never)\s+(?:\w+\s+)?$")
+RESOLUTION = re.compile(r"\b(resolved|delivered|cleared|completed|received|arrived|no longer)\b")
+# Words after which a resolution is only expected, not done: "until delivered", "to be delivered".
+NOT_DONE_YET = re.compile(r"\b(?:until|once|when|after|to be|will be|not|never)\b")
 CONDITION = re.compile(r"\b(if|unless|in case)\b")
-# A polite request (could you/we...) is not a hypothetical blocker.
-HYPOTHETICAL = re.compile(r"\b(?:might|may|could)\s+(?!(?:you|we)\b)|\bhypothetical\b")
+# A polite request (could you/we...) or "could not" is not a hypothetical blocker.
+HYPOTHETICAL = re.compile(r"\b(?:might|may|could)\s+(?!(?:you|we|not)\b)|\bhypothetical\b")
+
+
+def reports_resolution(text: str) -> bool:
+    """True for "backorder resolved"; false for "to be delivered" or "not delivered yet"."""
+    done_part = NOT_DONE_YET.split(text, maxsplit=1)[0]
+    return bool(RESOLUTION.search(done_part))
 
 
 def is_active(blocker: str, qualifiers: list[str]) -> bool:
     """Check a blocker clause together with the clauses that qualify it."""
-    if NEGATION.search(blocker) or RESOLUTION.search(blocker):
+    match = MATERIALS.search(blocker) or UPSTREAM.search(blocker)
+    if NEGATED_BEFORE.search(blocker[:match.start()]) or reports_resolution(blocker):
         return False
     if CONDITION.search(blocker) or HYPOTHETICAL.search(blocker):
         return False
@@ -29,8 +40,7 @@ def is_active(blocker: str, qualifiers: list[str]) -> bool:
         # "..., call me if anything changes" does not.
         if CONDITION.match(text.strip()):
             return False
-        # "now resolved" resolves the blocker; "not delivered yet" does not.
-        if RESOLUTION.search(text) and not NEGATION.search(text):
+        if reports_resolution(text):
             # "materials delivered" resolves a materials blocker, not a permit wait.
             if MATERIALS.search(blocker) or not re.search(r"\bmaterials?\b", text):
                 return False
@@ -77,7 +87,7 @@ def warehouse_dependency(notes: str) -> bool:
     for clause in active_clauses(notes):
         if not MATERIALS.search(clause):
             continue
-        if re.search(r"\b(?:awaiting|waiting for) materials from (?:the )?warehouse\b", clause):
+        if re.search(r"\bmaterials?(?: delivery)? from (?:the )?warehouse\b", clause):
             return True
         if re.match(r"\s*(?:the )?warehouse (?:confirmed )?backorder(?:ed)?\b", clause):
             return True

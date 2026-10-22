@@ -16,11 +16,11 @@ def decide(task: Task, today: date, blocker: str = "none") -> Action:
         return Action(task.task_id, "no_action", None, "Task is completed", None)
 
     if not task.owner:
-        also_missing_date = not task.due_date
         message = f"Please assign an owner to '{task.title}'."
-        if also_missing_date:
+        reason = "Missing task owner"
+        if not task.due_date:
             message += " Please also confirm its due date."
-        reason = "Missing owner and due date" if also_missing_date else "Missing task owner"
+            reason = "Missing owner and invalid due date" if task.due_raw else "Missing owner and due date"
         return Action(task.task_id, "clarify", COORDINATION_QUEUE, reason, message)
 
     if not task.due_date:
@@ -44,24 +44,28 @@ def decide(task: Task, today: date, blocker: str = "none") -> Action:
             f"Please confirm the material delivery ETA for '{task.title}'.",
         )
 
-    if task.status == "Blocked" or blocker == "upstream":
+    days_overdue = (today - task.due_date).days
+    # Escalations go to the coordination role: the owner has already been asked directly.
+    # A dependency mentioned in notes needs no escalation while the task is still on time.
+    if task.status == "Blocked" or (blocker == "upstream" and days_overdue > 0):
         reason = "Upstream dependency" if blocker == "upstream" else "Task is blocked"
         return Action(
-            task.task_id, "escalate", task.owner, reason,
-            f"'{task.title}' is blocked. Please identify what is needed to unblock it and provide an ETA.",
+            task.task_id, "escalate", COORDINATION_QUEUE, reason,
+            f"'{task.title}' (owner: {task.owner}) is blocked. "
+            "Please help unblock it and agree an ETA with the owner.",
         )
 
-    days_overdue = (today - task.due_date).days
     if days_overdue >= ESCALATE_AFTER_DAYS:
         return Action(
-            task.task_id, "escalate", task.owner, f"Overdue by {days_overdue} days",
-            f"'{task.title}' was due on {task.due_date.isoformat()}. Please provide a recovery plan and ETA.",
+            task.task_id, "escalate", COORDINATION_QUEUE, f"Overdue by {days_overdue} days",
+            f"'{task.title}' (owner: {task.owner}) was due on {task.due_date.isoformat()}. "
+            "Please agree a recovery plan and ETA with the owner.",
         )
 
     if days_overdue > 0:
+        days = "1 day" if days_overdue == 1 else f"{days_overdue} days"
         return Action(
-            task.task_id, "follow_up_owner", task.owner,
-            f"Overdue by {days_overdue} days",
+            task.task_id, "follow_up_owner", task.owner, f"Overdue by {days}",
             f"'{task.title}' was due on {task.due_date.isoformat()}. Please share the status and updated ETA.",
         )
 
