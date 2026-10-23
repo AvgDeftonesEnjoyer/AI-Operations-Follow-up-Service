@@ -1,5 +1,6 @@
 """Small English phrase rules for offline classification and safe routing."""
 
+from dataclasses import dataclass
 import re
 
 
@@ -13,21 +14,64 @@ UPSTREAM = re.compile(
 )
 
 
+@dataclass
+class BlockerMention:
+    text: str
+    kind: str
+    active: bool = True
+
+
 def active_clauses(notes: str):
-    """Yield recognized candidate clauses, skipping hypothetical/resolved text."""
+    """Keep blocker mentions until later clauses have resolved or qualified them.
+
+    Named resolutions affect that category; an unnamed update affects the latest
+    mention. This is a small fallback grammar, not general language understanding.
+    """
+    mentions = []
     for sentence in re.split(r"[.!?;\n]+", notes.casefold()):
-        # Keep a leading condition attached to the whole sentence.
         if re.match(r"\s*(if|unless|in case)\b", sentence):
             continue
         for clause in re.split(r",|\b(?:but|however)\b", sentence):
-            # Missing updates or ETAs do not negate a dependency.
             text = re.sub(r"\bno (?:eta|delivery date|updates?)\b", "", clause)
-            # A polite request (could you/we...) is not a hypothetical blocker.
-            if re.search(r"\b(?:might|may|could)\s+(?!(?:you|we)\b)|\bhypothetical\b", text):
+            kind = None
+            if MATERIALS.search(text):
+                kind = "materials"
+            elif UPSTREAM.search(text):
+                kind = "upstream"
+            conditional = re.search(
+                r"\b(if|unless|in case|hypothetical)\b|\b(?:might|may|could)\s+(?!(?:you|we)\b)", text
+            )
+            if conditional:
+                # A trailing condition qualifies the preceding mention, not a new dependency.
+                if kind is None and re.match(r"\s*(if|unless|in case)\b", text) and mentions:
+                    mentions[-1].active = False
                 continue
-            if re.search(r"\b(no|not|never|resolved|delivered|cleared|completed)\b", text):
+
+            # "Not resolved" is not a resolution. Keep its preceding blocker active.
+            state_text = re.sub(r"\bnot (?:yet )?(?:resolved|delivered|cleared|completed)\b", "", text)
+            inactive = re.search(r"\b(no|not|never|resolved|delivered|cleared|completed)\b", state_text)
+            if inactive:
+                # An unrelated negation, e.g. "warehouse is not involved", is not a resolution.
+                if kind is None and not re.search(r"\b(resolved|delivered|cleared|completed)\b", state_text):
+                    continue
+                subject = kind
+                if subject is None and re.search(r"\b(materials?|backorder|warehouse)\b", text):
+                    subject = "materials"
+                if subject is None and re.search(r"\b(upstream|permit|splice)\b", text):
+                    subject = "upstream"
+                if subject is not None:
+                    for mention in mentions:
+                        if mention.kind == subject:
+                            mention.active = False
+                elif mentions:
+                    mentions[-1].active = False
                 continue
-            yield text
+            if kind is not None:
+                mentions.append(BlockerMention(text, kind))
+
+    for mention in mentions:
+        if mention.active:
+            yield mention.text
 
 
 def simple_interpretation(notes: str) -> str:
