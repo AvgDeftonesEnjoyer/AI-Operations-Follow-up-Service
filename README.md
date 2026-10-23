@@ -50,7 +50,7 @@ python main.py --db .data/failure_demo.sqlite \
   --timeout-after-commit-once
 ```
 
-The console and the audit log show `read_retry`, `send_retry`, and `reconciled_after_timeout`, with exactly one delivery per operation ID. Reads and sends make at most **3 attempts** with short exponential backoff and jitter; non-retryable 4xx errors are not retried. If a temporary error outlasts the retries, the rest of that run's sends are reported as `deferred` instead of hammering the provider; the next run resumes them.
+The console and the audit log show `read_retry`, `send_retry`, and `reconciled_after_timeout`, with exactly one delivery per operation ID. Reads and sends make at most **3 attempts** with short exponential backoff and jitter; non-retryable 4xx errors are not retried. Receipt lookups retry the same way; a lookup that stays unavailable is never read as "not sent": that action is reported `failed` (`lookup_failed`) without a blind send, and a later run reconciles it. If a temporary error outlasts the retries, the rest of that run's sends are reported as `deferred` instead of hammering the provider; the next run resumes them.
 
 ## Optional real LLM (Claude)
 
@@ -66,7 +66,7 @@ python main.py --llm claude --db .data/claude_demo.sqlite
 
 - **Structured output:** a JSON Schema (`output_config.format`) allows only `{"blocker_type": "none" | "materials" | "upstream"}`. The answer is validated again locally; extra fields, invalid JSON, refusals, truncated output, or unexpected content blocks trigger the deterministic fallback. Thinking blocks are ignored.
 - **The model cannot change facts or actions.** Owners, dates, status, recipients, and message text come from Python, never from the model. Notes are sent as untrusted data, and the system prompt says to ignore instructions inside them.
-- **Errors:** 429/5xx, timeouts, and network errors get one retry after 1 second, then the fallback. Configuration errors — 400 (bad request), 401/403 (rejected key), 404 (unknown model) — stop the run: every call would fail the same way, so silently running on the fallback would hide the problem. Each fallback is logged as `llm_fallback` with a short reason (`http_<status>`, `timeout`, `network_error`, `invalid_json`, `invalid_schema`, `truncated_output`, `refusal`, `unsupported_content`, `oversized_response`, `provider_error`); provider messages and keys are never logged.
+- **Errors:** 429/5xx, timeouts, and network errors get one retry after 1 second, then the fallback; if that retry fails too, Claude is skipped for the rest of the run (`provider_unavailable`) instead of being called for every note. Configuration errors — 400 (bad request), 401/403 (rejected key), 404 (unknown model) — stop the run: every call would fail the same way, so silently running on the fallback would hide the problem. Each fallback is logged as `llm_fallback` with a short reason from a fixed list (`http_<status>`, `timeout`, `network_error`, `invalid_json`, `invalid_schema`, `truncated_output`, `refusal`, `unexpected_stop`, `unsupported_content`, `response_too_large`, `provider_unavailable`, `provider_error`); provider messages and keys are never logged.
 - **Visible degradation and cost:** the run report stores `llm_fallbacks` (notes the model could not classify) and `llm_usage` (calls and token totals); the CLI prints a warning when any fallback happened.
 - **Hardening:** redirects are refused (the key never leaves api.anthropic.com), and responses are capped at 64 KiB.
 
@@ -93,14 +93,22 @@ Applied in priority order:
 | Missing owner (or a placeholder such as `TBD`, `Unassigned`, `Not assigned`) | `clarify` | `coordination_queue` (a role, not an invented person) |
 | Missing/invalid due date or unknown status | `clarify` | known owner |
 | Materials dependency, and the task is `Blocked` or overdue | `request_eta` | `warehouse` when the notes name it, otherwise the owner |
-| Status `Blocked`, or overdue and waiting on upstream work | `escalate` | `coordination_queue`; the message names the owner |
+| Waiting on upstream work, and the task is `Blocked` or overdue | `escalate` | `coordination_queue`; the message names the owner |
+| `Blocked` with no known cause | `clarify` | known owner (what is blocking it, and the ETA) |
 | Still overdue 3+ days after the owner's follow-up | `escalate` | `coordination_queue`; the message names the owner and the follow-up date |
 | Overdue | `follow_up_owner` | known owner |
 | Otherwise (including a dependency on a task that is on time) | `no_action` | none |
 
-The owner is always asked first: even a long-overdue task gets a follow-up, and escalates only if it is still overdue three days after that follow-up (`ESCALATE_AFTER_DAYS` and `coordination_queue` are demo assumptions in `followup/rules.py`). Every message starts with the task ID, title, and project; reminders, ETA requests, and escalations also give the due date, so the recipient needs no other context. Missing or invalid dates are never guessed.
+The owner is asked first, except for work waiting on another team, which the owner cannot unblock: even a long-overdue task gets a follow-up, and escalates only if it is still overdue three days after that follow-up to the same owner for the same deadline (a new owner or a moved deadline starts over). `ESCALATE_AFTER_DAYS` and `coordination_queue` are demo assumptions in `followup/rules.py`. Every message starts with the task ID, title, and project; reminders, ETA requests, and escalations also give the due date, so the recipient needs no other context. Missing or invalid dates are never guessed.
 
-A valid model classification is used as returned; without one, `followup/notes.py` uses small English keyword lists: a waiting word (`awaiting`, `waiting`, `pending`, `delayed`, `backorder`, `out of stock`, `not yet delivered`, `never arrived`…) plus a materials word (`materials`, `parts`, `cable`, `delivery`, `supplier`, `warehouse`…) means `materials`; a waiting word alone means `upstream`; `resolved`/`received`/`arrived`/`no longer` means `none` unless the same clause says it has not happened yet (`not yet received`, `until materials are received`). A negated blocking word (`no backorder`, `not delayed`, `nothing pending`) does not count. Mixed notes ("resolved, but still waiting") are the LLM's job.
+A valid model classification is used as returned; without one, `followup/notes.py` judges each clause of the note (split at punctuation, `and`, `but`) with small English keyword lists:
+
+- a waiting word (`awaiting`, `waiting`, `pending`, `backorder`, `out of stock`, `not yet delivered`…) or a shortage word (`shortage`, `short on`, `missing`, `delayed`, `need`…) next to a materials word (`materials`, `parts`, `cable`, `delivery`, `supplier`, `warehouse`…) means `materials`; a waiting word alone means `upstream`;
+- negated (`no backorder`, `not delayed`) and hypothetical (`if a backorder occurs`, `could become a problem`) clauses do not count;
+- a resolution (`resolved`, `delivered`, `completed`…) does not count when the same clause says it has not happened yet (`not yet received`); a later update closes the blocker it talks about: "all materials have arrived" closes materials blockers, "permit completed" closes the permit wait, a bare "now resolved" closes the last one, and "safety training completed" closes nothing;
+- the warehouse is asked only when a still-active materials clause names it.
+
+These are deliberately small rules, not a language parser; richer notes are the LLM's job.
 
 ### Why repeated runs are safe
 
@@ -131,6 +139,7 @@ Incomplete in this timebox:
 - CLI batch only; no HTTP API or scheduler.
 - No live quality evaluation of the LLM classifier.
 - Offline keyword rules are English-only and deliberately simple.
+- ETA requests and clarifications are sent once per task state; they are not escalated automatically if nobody answers.
 - No staleness rule based on `last_update`; retries do not read `Retry-After` headers.
 
 For production at ~10,000 tasks/day:

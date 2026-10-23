@@ -22,6 +22,11 @@ def pause(attempt: int):
     time.sleep(min(0.1 * 2 ** (attempt - 1), 0.5) * random.uniform(0.5, 1))
 
 
+def is_retryable(error):
+    """A timeout or a 429/5xx may succeed later; other API errors will not."""
+    return isinstance(error, AmbiguousTimeout) or error.retryable
+
+
 class Service:
     def __init__(self, task_api, delivery_api, store, ai, today: date):
         self.task_api = task_api
@@ -55,21 +60,43 @@ class Service:
             raise ValueError("Duplicate task IDs in fixture: refusing inconsistent sends")
         return tasks
 
-    def deliver(self, action):
+    def deliver(self, action, due_date=None):
+        """Send at most once per operation ID. Returns the delivery status."""
         key = action.operation_id
-        body = {k: v for k, v in action.to_dict("pending").items()
-                if k != "delivery_status"}
-        body["as_of"] = self.today.isoformat()
-
-        # Reconciliation first: a previous run may have timed out after sending.
-        if self.delivery_api.lookup(key) is not None:
-            self.store.log("already_sent", key)
-            return "already_sent"
-
         # The provider kept failing earlier in this run: do not flood it; the next run resumes.
         if self.delivery_down:
             self.store.log("send_deferred", key)
             return "deferred"
+        try:
+            return self._deliver(action, due_date)
+        except (APIError, AmbiguousTimeout) as error:
+            # An unavailable lookup is not evidence that nothing was sent: send nothing.
+            self.store.log("lookup_failed", key, type(error).__name__)
+            if is_retryable(error):
+                self.delivery_down = True
+            return "failed"
+
+    def lookup(self, key):
+        """Receipt lookup with the same bounded retries as sends."""
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            try:
+                return self.delivery_api.lookup(key)
+            except (APIError, AmbiguousTimeout) as error:
+                if not is_retryable(error) or attempt == MAX_ATTEMPTS:
+                    raise
+                self.store.log("lookup_retry", key, f"Attempt {attempt}")
+                pause(attempt)
+
+    def _deliver(self, action, due_date):
+        key = action.operation_id
+        body = {k: v for k, v in action.to_dict("pending").items()
+                if k != "delivery_status"}
+        body.update(as_of=self.today.isoformat(), due_date=due_date)
+
+        # Reconciliation first: a previous run may have timed out after sending.
+        if self.lookup(key) is not None:
+            self.store.log("already_sent", key)
+            return "already_sent"
 
         for attempt in range(1, MAX_ATTEMPTS + 1):
             try:
@@ -79,13 +106,12 @@ class Service:
                 return status
             except (APIError, AmbiguousTimeout) as error:
                 # Even a timeout is ambiguous: look up the stable operation ID.
-                if self.delivery_api.lookup(key) is not None:
+                if self.lookup(key) is not None:
                     self.store.log("reconciled_after_timeout", key)
                     return "reconciled"
-                retryable = isinstance(error, AmbiguousTimeout) or error.retryable
-                if not retryable or attempt == MAX_ATTEMPTS:
+                if not is_retryable(error) or attempt == MAX_ATTEMPTS:
                     self.store.log("send_failed", key, str(error))
-                    if retryable:  # Temporary errors outlasted every retry.
+                    if is_retryable(error):  # Temporary errors outlasted every retry.
                         self.delivery_down = True
                     return "failed"
                 self.store.log("send_retry", key, f"Attempt {attempt}: {error}")
@@ -109,7 +135,8 @@ class Service:
                         self.store.log("llm_fallback",
                                        detail=f"Task {task.task_id}; reason={fallback_reason}")
 
-            action = decide(task, self.today, blocker, self.store.owner_asked_on(task.task_id))
+            asked_on = self.store.owner_asked_on(task.task_id, task.owner, task.due_raw)
+            action = decide(task, self.today, blocker, asked_on)
             if action.decision == "no_action":
                 yield action.to_dict("not_needed")
                 continue
@@ -117,10 +144,10 @@ class Service:
             action = replace(
                 action, operation_id=task.fingerprint(action.decision, action.target)
             )
-            status = self.deliver(action)
-            if status == "already_sent":
+            status = self.deliver(action, task.due_raw)
+            sent = self.delivery_api.lookup(action.operation_id) if status == "already_sent" else None
+            if sent:
                 # Report what the recipient actually got; today's wording can differ ("12 days").
-                sent = self.delivery_api.lookup(action.operation_id)
                 action = replace(action, reason=sent["reason"], message=sent["message"])
             yield action.to_dict(status)
 

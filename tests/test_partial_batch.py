@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 import main
-from followup.api import APIError, DeliveryAPI
+from followup.api import DeliveryAPI
 from followup.store import Store
 
 ROW = dict(task_id="A", project="Demo", task="Inspect", assigned_to="Sam",
@@ -39,14 +39,15 @@ class PartialBatchTests(unittest.TestCase):
             def lookup_fails_on_second_task(api, key):
                 calls.append(key)
                 if len(calls) == 2:
-                    raise APIError(503)
+                    # Not an API error (those are retried): an unexpected crash mid-batch.
+                    raise RuntimeError("disk failure")
                 return real_lookup(api, key)
 
             with patch.object(DeliveryAPI, "lookup", lookup_fails_on_second_task):
                 code, report = run_cli()
             self.assertEqual(code, 1)
             self.assertEqual(report["run"]["status"], "failed")
-            self.assertEqual(report["run"]["error"], "APIError")
+            self.assertEqual(report["run"]["error"], "RuntimeError")
             self.assertEqual([(d["task_id"], d["delivery_status"]) for d in report["decisions"]],
                              [("A", "sent")])
 

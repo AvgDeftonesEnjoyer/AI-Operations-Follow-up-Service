@@ -9,8 +9,8 @@ import sqlite3
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())  # Silent unless the CLI configures logging.
-WARNING_EVENTS = {"read_retry", "send_retry", "send_failed", "send_deferred", "llm_fallback",
-                  "run_failed"}
+WARNING_EVENTS = {"read_retry", "send_retry", "send_failed", "send_deferred", "lookup_retry",
+                  "lookup_failed", "llm_fallback", "run_failed"}
 
 
 def now_utc():
@@ -78,13 +78,18 @@ class Store:
             )
         return cursor.rowcount == 1
 
-    def owner_asked_on(self, task_id: str):
-        """The as-of date of the first follow-up the owner received for this task, or None."""
+    def owner_asked_on(self, task_id: str, owner: str | None, due_date: str | None):
+        """The as-of date of the first follow-up this owner got for this deadline, or None.
+
+        A new owner or a moved deadline starts over with a fresh follow-up.
+        """
         row = self.connection.execute(
             "SELECT MIN(json_extract(action_json, '$.as_of')) FROM deliveries "
             "WHERE json_extract(action_json, '$.task_id') = ? "
-            "AND json_extract(action_json, '$.decision') = 'follow_up_owner'",
-            (task_id,),
+            "AND json_extract(action_json, '$.decision') = 'follow_up_owner' "
+            "AND json_extract(action_json, '$.target') = ? "
+            "AND json_extract(action_json, '$.due_date') = ?",
+            (task_id, owner, due_date),
         ).fetchone()
         return date.fromisoformat(row[0]) if row[0] else None
 

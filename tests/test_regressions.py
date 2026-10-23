@@ -93,6 +93,17 @@ class RegressionTests(unittest.TestCase):
         self.assertIn("asked on 2026-10-21", later[0]["message"])
         self.assertEqual(len(self.store.deliveries()), 2)
 
+    def test_new_owner_or_new_deadline_is_asked_before_any_escalation(self):
+        ai = Mock(interpret=Mock(return_value="none"))
+        self.fixture.write_text(json.dumps([{**ROW, "due_date": "2026-10-10", "notes": ""}]))
+        self.run_service(ai)  # Sam is asked on 10-21.
+        for change in [{"assigned_to": "Mary"}, {"due_date": "2026-10-19"}]:
+            with self.subTest(change=change):
+                self.fixture.write_text(json.dumps([{**ROW, "due_date": "2026-10-10", "notes": "",
+                                                     **change}]))
+                result = self.run_service(ai, date(2026, 10, 24))[0]
+                self.assertEqual(result["decision"], "follow_up_owner")
+
     def test_already_sent_reports_what_was_actually_delivered(self):
         ai = Mock(interpret=Mock(return_value="none"))
         self.run_service(ai)
@@ -166,6 +177,14 @@ class RegressionTests(unittest.TestCase):
             ("Waiting on fiber delivery from vendor.", "request_eta", "Sam"),
             ("Materials have not arrived yet.", "request_eta", "Sam"),
             ("Waiting for materials; nothing received.", "request_eta", "Sam"),
+            ("Materials shortage.", "request_eta", "Sam"),
+            ("Materials not available.", "request_eta", "Sam"),
+            ("Short on conduit; supplier says two weeks.", "request_eta", "Sam"),
+            ("Need handhole boxes from warehouse.", "request_eta", "warehouse"),
+            ("Permit received, but still waiting on conduit delivery from warehouse.", "request_eta", "warehouse"),
+            ("Vendor shipment delayed; warehouse not involved.", "request_eta", "Sam"),
+            ("Warehouse delivered the cable; waiting for city permit.", "escalate", "coordination_queue"),
+            ("Minor delay, will finish tomorrow.", "follow_up_owner", "Sam"),
             ("Backorder resolved.", "follow_up_owner", "Sam"),
             ("No material shortage.", "follow_up_owner", "Sam"),
             ("No backorder, parts on site.", "follow_up_owner", "Sam"),
@@ -217,7 +236,7 @@ class RegressionTests(unittest.TestCase):
             ({"return_value": response(stop_reason="max_tokens")}, "truncated_output"),
             ({"return_value": response(stop_reason="refusal")}, "refusal"),
             ({"return_value": response(blocks=[{"type": "tool_use"}])}, "unsupported_content"),
-            ({"return_value": BytesIO(b" " * 70000)}, "oversized_response"),
+            ({"return_value": BytesIO(b" " * 70000)}, "response_too_large"),
         ]
         for http_behavior, reason in cases:
             with self.subTest(reason=reason):
@@ -244,6 +263,16 @@ class RegressionTests(unittest.TestCase):
         with self.assertRaises(AIError):
             self.run_service(Mock(interpret=Mock(side_effect=AIError("Claude returned HTTP 401", "http_401"))))
         self.assertEqual(self.store.deliveries(), [])
+
+    def test_claude_is_not_called_again_after_it_keeps_failing(self):
+        busy = error.HTTPError("https://api.anthropic.com/v1/messages", 503, "busy", {}, None)
+        ai = ClaudeInterpreter(api_key="test-key")
+        with patch("followup.ai.time.sleep"), \
+                patch("urllib.request.OpenerDirector.open", side_effect=busy) as http:
+            first = interpret_safely(ai, "Awaiting materials from warehouse")
+            second = interpret_safely(ai, "Waiting on city permit")
+        self.assertEqual((first, second), (("materials", "http_503"), ("upstream", "provider_unavailable")))
+        self.assertEqual(http.call_count, 2)  # One request and its retry, then no more.
 
     def test_unexpected_provider_error_never_leaks_into_the_log(self):
         secret = "sk-ant-api03-SECRET"

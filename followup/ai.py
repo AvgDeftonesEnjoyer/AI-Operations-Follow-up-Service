@@ -12,6 +12,12 @@ BLOCKER_TYPES = {"none", "materials", "upstream"}
 # Configuration errors (bad request, rejected key, unknown model) would fail every call:
 # stop the run instead of quietly running on the fallback.
 FATAL_REASONS = {"http_400", "http_401", "http_403", "http_404"}
+# The only reasons that may reach the audit log; anything else becomes provider_error.
+FALLBACK_REASONS = {
+    "provider_error", "provider_unavailable", "timeout", "network_error", "invalid_json",
+    "invalid_schema", "response_too_large", "truncated_output", "refusal", "unexpected_stop",
+    "unsupported_content",
+} | {f"http_{code}" for code in range(100, 600)}
 
 
 class NoRedirects(request.HTTPRedirectHandler):
@@ -58,8 +64,11 @@ class ClaudeInterpreter:
         self.http = request.build_opener(NoRedirects())
         # Token totals for the run report: the cost signal.
         self.usage = {"calls": 0, "input_tokens": 0, "output_tokens": 0}
+        self.unavailable = False  # Set when Claude kept failing; skip it for the rest of the run.
 
     def interpret(self, notes: str) -> str:
+        if self.unavailable:
+            raise AIError("Claude kept failing earlier in this run", "provider_unavailable")
         # Notes are user-provided data, never instructions for the assistant.
         body = {
             "model": self.model,
@@ -97,7 +106,12 @@ class ClaudeInterpreter:
             if not exc.transient:
                 raise
             time.sleep(1)  # One short retry for 429/5xx/timeouts; the fallback covers the rest.
-            result = self._send(http_request)
+            try:
+                result = self._send(http_request)
+            except AIError as again:
+                if again.transient:
+                    self.unavailable = True  # Stop calling a provider that keeps failing.
+                raise
 
         # Validate again locally. Never trust an external response blindly.
         if not isinstance(result, dict) or set(result) != {"blocker_type"}:
@@ -111,7 +125,7 @@ class ClaudeInterpreter:
             with self.http.open(http_request, timeout=15) as response:
                 raw = response.read(65537)
                 if len(raw) > 65536:
-                    raise AIError("Claude response exceeds size limit", "oversized_response")
+                    raise AIError("Claude response exceeds size limit", "response_too_large")
                 payload = json.loads(raw)
             usage = payload.get("usage") or {}
             self.usage["calls"] += 1
@@ -120,7 +134,7 @@ class ClaudeInterpreter:
             # A refusal or truncated response is not usable, even if it contains JSON.
             if payload["stop_reason"] != "end_turn":
                 reason = {"max_tokens": "truncated_output", "refusal": "refusal"}.get(
-                    payload["stop_reason"], "unsupported_content")
+                    payload["stop_reason"], "unexpected_stop")
                 raise AIError("Claude did not finish its classification", reason)
             blocks = payload["content"]
             if not isinstance(blocks, list) or any(
@@ -153,7 +167,8 @@ def interpret_safely(ai, notes: str) -> tuple[str, str | None]:
     except AIError as exc:  # Bad provider responses must not stop the batch; bad config must.
         if exc.reason in FATAL_REASONS:
             raise
-        return simple_interpretation(notes), exc.reason
+        reason = exc.reason if exc.reason in FALLBACK_REASONS else "provider_error"
+        return simple_interpretation(notes), reason
     except Exception:  # Unknown errors may carry secrets in their text, so log only a category.
         return simple_interpretation(notes), "provider_error"
     if not isinstance(label, str) or label not in BLOCKER_TYPES:

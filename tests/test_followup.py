@@ -245,10 +245,14 @@ class RuleTests(unittest.TestCase):
         blocked = task(status="Blocked", due_date="2027-01-15", notes="Pending conduit shipment")
         self.assertEqual(decide(blocked, TODAY, blocker="materials").decision, "request_eta")
 
-    def test_blocked_without_materials_escalates(self):
-        self.assertEqual(decide(task(status="Blocked"), TODAY).decision, "escalate")
-        self.assertEqual(decide(task(status="Blocked", due_date="2026-12-01"), TODAY).decision,
-                         "escalate")
+    def test_blocked_without_a_known_cause_asks_the_owner_first(self):
+        for due in ["2026-10-20", "2026-12-01"]:
+            with self.subTest(due=due):
+                action = decide(task(status="Blocked", due_date=due), TODAY)
+                self.assertEqual((action.decision, action.target), ("clarify", "Sam"))
+        # A known dependency on other work goes to the coordination role, who can unblock it.
+        action = decide(task(status="Blocked", due_date="2026-12-01"), TODAY, blocker="upstream")
+        self.assertEqual((action.decision, action.target), ("escalate", "coordination_queue"))
 
     def test_upstream_note_escalates_only_when_overdue(self):
         on_time = task(status="Not Started", due_date="2026-12-15", notes="Waiting on survey crew")
