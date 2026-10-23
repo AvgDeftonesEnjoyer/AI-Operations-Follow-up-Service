@@ -254,7 +254,8 @@ class RuleTests(unittest.TestCase):
         for due in ["2026-10-20", "2026-12-01"]:
             with self.subTest(due=due):
                 action = decide(task(status="Blocked", due_date=due), TODAY)
-                self.assertEqual((action.decision, action.target), ("clarify", "Sam"))
+                self.assertEqual((action.decision, action.target), ("follow_up_owner", "Sam"))
+                self.assertIn("what is blocking it", action.message)
         # A known dependency on other work goes to the coordination role, who can unblock it.
         action = decide(task(status="Blocked", due_date="2026-12-01"), TODAY, blocker="upstream")
         self.assertEqual((action.decision, action.target), ("escalate", "coordination_queue"))

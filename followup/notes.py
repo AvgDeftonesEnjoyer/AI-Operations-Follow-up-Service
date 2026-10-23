@@ -26,7 +26,7 @@ UPSTREAM = re.compile(r"\b(upstream|permit|[a-z]{2,}-\d+)\b")
 NEGATED = re.compile(
     r"\b(?:no|not|nothing|never) (?:await\w*|waiting|pending|delay\w*|backorder\w*|out of stock|"
     r"blocked (?:by|on)|dependent on|upstream|late|missing)\b"
-    r"|\bno (?:\w+ )?(?:shortage|missing|issues?|problems?|concerns?)\b"
+    r"|\bno (?:\w+ )?(?:shortage|missing|issues?|problems?|concerns?|needed|required)\b"
 )
 RESOLVED = re.compile(r"\b(resolved|received|arrived|delivered|completed|approved|cleared|no longer)\b")
 # "Not yet received", "until it is received", "awaiting approved materials": not done yet.
@@ -63,11 +63,16 @@ def blocker_kind(clause: str):
 def active_blockers(notes: str):
     """(kind, clause) for every clause that still describes a blocker."""
     active = []
+    previous = ""
     text = NEGATED.sub("", " ".join(notes.casefold().split()))
     for clause in re.split(r"[.;,!?]|\b(?:and|but|however)\b", text):
         if HYPOTHETICAL.search(clause):
             continue
         kind = blocker_kind(clause)
+        if kind is None and WAITING.search(clause) and not is_resolved(clause):
+            # "Materials ordered, but not received yet": the wait refers to the item just named.
+            kind = blocker_kind(f"{previous} {clause}")
+        previous = clause
         if kind:
             active.append((kind, clause))
         elif is_resolved(clause) and active:

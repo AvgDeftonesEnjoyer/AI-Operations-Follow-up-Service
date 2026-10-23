@@ -8,7 +8,7 @@ import time
 from .ai import interpret_safely
 from .api import APIError, AmbiguousTimeout
 from .models import Task
-from .rules import decide
+from .rules import decide, needs_attention
 
 
 MAX_ATTEMPTS = 3
@@ -127,7 +127,7 @@ class Service:
         """
         if task.status in {"Done", "Unknown"} or not (task.owner and task.due_date and task.notes):
             return "none"  # Missing facts or a finished task: the notes cannot change the action.
-        if task.status != "Blocked" and self.today <= task.due_date:
+        if not needs_attention(task, self.today):
             return "none"  # On time and not blocked: no action either way, so no model cost.
         state_id = task.state_id()
         stored = self.store.get_classification(state_id)

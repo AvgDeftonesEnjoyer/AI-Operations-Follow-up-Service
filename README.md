@@ -94,20 +94,22 @@ Applied in priority order:
 | Task is `Done` | `no_action` | none |
 | Missing owner (or a placeholder such as `TBD`, `Unassigned`, `PM to assign`, `Pending`, `Vacant`) | `clarify` | `coordination_queue` (a role, not an invented person) |
 | Missing/invalid due date or unknown status | `clarify` | known owner |
+| Overdue, and the owner was chased 3+ days ago | `escalate` | `coordination_queue`; the message names the owner and when they were asked |
 | Materials dependency, and the task is `Blocked` or overdue | `request_eta` | `warehouse` when the notes name it, otherwise the owner |
 | Dependency on other work, and the task is `Blocked` or overdue | `escalate` | `coordination_queue`; the message names the owner |
-| `Blocked` with no known cause | `clarify` | known owner (what is blocking it, and the ETA) |
-| Overdue, and the owner was asked 3+ days ago | `escalate` | `coordination_queue`; the message names the owner and when they were asked |
-| Overdue | `follow_up_owner` | known owner (once per owner and deadline) |
+| `Blocked` with no known cause | `follow_up_owner` | known owner: what is blocking it, and the ETA |
+| Overdue | `follow_up_owner` | known owner |
 | Otherwise (including a dependency on a task that is on time) | `no_action` | none |
 
-The owner is asked first, except for work waiting on another team, which the owner cannot unblock: even a long-overdue task gets a follow-up, once. If it is still overdue three days after the owner was first asked once the deadline had passed (by a follow-up or a "what is blocking it" clarification; a question from before the deadline does not count), coordination is asked to agree a recovery plan — an owner's note ("finishing Friday"), marking the task Blocked, or touching the record does not stop or postpone that while the task stays overdue. A new owner or a moved deadline starts over; a different spelling of the same owner ("sam lee") or deadline (`2026-10-18T00:00:00Z`) does not. Renaming the task counts as a new message, because the text names it. `ESCALATE_AFTER_DAYS` and `coordination_queue` are demo assumptions in `followup/rules.py`. Every message starts with the task ID, title, and project; reminders, ETA requests, and escalations also give the due date, so the recipient needs no other context. Messages contain no day counts. Missing or invalid dates are never guessed.
+**The owner first, then coordination.** An overdue task's owner is chased once — by a follow-up or an ETA request sent to them after the deadline. If the task is still overdue three days later, coordination is asked to agree a recovery plan, whatever the notes say by then: an owner's note ("finishing Friday"), a materials label (even one produced by a tricked model), marking the task Blocked, or touching the record does not stop it. Questions from before the deadline and clarifications about missing facts do not start the clock. A new owner or a moved deadline starts over. Work waiting on another team goes to coordination straight away, because the owner cannot unblock it. `ESCALATE_AFTER_DAYS` and `coordination_queue` are demo assumptions in `followup/rules.py`.
+
+**Messages.** Each starts with the task ID, title, and project; reminders, ETA requests, and escalations also give the due date, so the recipient needs no other context. Messages contain no day counts. Missing or invalid dates are never guessed.
 
 A valid model classification is used as returned; without one, `followup/notes.py` judges each clause of the note (split at punctuation, `and`, `but`) with small English keyword lists. When in doubt the answer is `none`, so the owner gets the reminder:
 
-- a blocker word (`awaiting`, `pending`, `blocked`, `held up`, `on order`, `backorder`, `short on`, `missing`, `delayed`, `late`, `ran out`, `ETA unknown`, `haven't received`…) next to a materials word (`materials`, `supplies`, `parts`, `hardware`, `cable`, `inventory`, `shipping`, `delivery`, `supplier`, `warehouse`…) means `materials` — so the spec's "blocked by materials" asks for an ETA;
+- a blocker word (`awaiting`, `pending`, `blocked`, `held up`, `on order`, `backorder`, `short on`, `missing`, `delayed`, `late`, `ran out`, `ETA unknown`, `haven't received`…) next to a materials word (`materials`, `supplies`, `parts`, `hardware`, `cable`, `inventory`, `shipping`, `delivery`, `supplier`, `warehouse`…) means `materials` — so the spec's "blocked by materials" asks for an ETA; a bare "not received yet" refers to the item named just before it;
 - a blocker word next to `upstream`, `permit`, or another task's ID means `upstream` ("unable to proceed until upstream splice confirmed", "waiting on city permit", "blocked by TC-1008"); anything else — a bare "pending", "blocked by weather", or "permit issued" with no wait — goes to the owner, not past them;
-- negated (`no backorder`, `not delayed`, `no materials issues`) and hypothetical (`if a backorder occurs`, `could become a problem`) clauses do not count;
+- negated (`no backorder`, `not delayed`, `no materials issues`, `no parts required`) and hypothetical (`if a backorder occurs`, `could become a problem`) clauses do not count;
 - a resolution (`resolved`, `delivered`, `completed`…) does not count when the same clause says it has not happened yet (`not yet received`); a later update closes the blocker it talks about: "all materials have arrived" closes materials blockers, "permit completed" closes the permit wait, a bare "now resolved" closes the last one, and "safety training completed" closes nothing;
 - the warehouse is asked only when a still-active materials clause names it.
 
@@ -143,7 +145,7 @@ Incomplete in this timebox:
 - CLI batch only; no HTTP API or scheduler.
 - No live quality evaluation of the LLM classifier.
 - Offline keyword rules are English-only and deliberately simple.
-- ETA requests and clarifications are sent once per recipient and deadline; they are not escalated automatically if nobody answers.
+- ETA requests to the warehouse and clarifications of missing facts are sent once; they are not escalated automatically if nobody answers.
 - No staleness rule based on `last_update`; retries do not read `Retry-After` headers.
 
 For production at ~10,000 tasks/day:

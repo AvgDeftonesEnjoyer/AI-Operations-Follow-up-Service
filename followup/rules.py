@@ -16,6 +16,11 @@ def about(task: Task) -> str:
     return f"{text} ({task.project})" if task.project else text
 
 
+def needs_attention(task: Task, today: date) -> bool:
+    """A dependency in the notes matters only once the task is Blocked or overdue."""
+    return task.status == "Blocked" or today > task.due_date
+
+
 def decide(task: Task, today: date, blocker: str = "none",
            owner_asked_on: date | None = None) -> Action:
     """Choose one safe action. Missing facts take priority over reminders.
@@ -49,26 +54,9 @@ def decide(task: Task, today: date, blocker: str = "none",
 
     due = task.due_date.isoformat()
     overdue = today > task.due_date
-    # A dependency mentioned in notes needs action only once the task is Blocked or overdue.
-    needs_attention = task.status == "Blocked" or overdue
 
-    if blocker == "materials" and needs_attention:
-        # The warehouse is asked only when the notes name it; otherwise the owner chases the ETA.
-        target = "warehouse" if warehouse_dependency(task.notes) else task.owner
-        return Action(
-            task.task_id, "request_eta", target, "Materials dependency",
-            f"{about(task)} is waiting for materials (due {due}). Please confirm the delivery ETA.",
-        )
-
-    if blocker == "upstream" and needs_attention:
-        # The owner cannot unblock work that waits on another team: coordination can.
-        return Action(
-            task.task_id, "escalate", COORDINATION_QUEUE, "Upstream dependency",
-            f"{about(task)} is blocked (owner: {task.owner}, due {due}). "
-            "Please help unblock it and agree an ETA with the owner.",
-        )
-
-    # The owner is asked first; if the task is still overdue days later, coordination steps in.
+    # The owner was asked after the deadline and the task is still overdue days later:
+    # coordination steps in, whatever the notes say now.
     if overdue and owner_asked_on and (today - owner_asked_on).days >= ESCALATE_AFTER_DAYS:
         asked = owner_asked_on.isoformat()
         return Action(
@@ -78,11 +66,29 @@ def decide(task: Task, today: date, blocker: str = "none",
             f"asked on {asked}. Please agree a recovery plan and ETA with the owner.",
         )
 
-    if task.status == "Blocked":
-        # Blocked with no known cause: ask the owner rather than escalate a guess.
+    if blocker == "materials" and needs_attention(task, today):
+        # The warehouse is asked only when the notes name it; otherwise the owner chases the ETA.
+        target = "warehouse" if warehouse_dependency(task.notes) else task.owner
         return Action(
-            task.task_id, "clarify", task.owner, "Blocker not explained",
-            f"{about(task)} is marked Blocked (due {due}). Please say what is blocking it and give an ETA.",
+            task.task_id, "request_eta", target, "Materials dependency",
+            f"{about(task)} is waiting for materials (due {due}). Please confirm the delivery ETA.",
+        )
+
+    if blocker == "upstream" and needs_attention(task, today):
+        # The owner cannot unblock work that waits on another team: coordination can.
+        return Action(
+            task.task_id, "escalate", COORDINATION_QUEUE, "Upstream dependency",
+            f"{about(task)} is blocked (owner: {task.owner}, due {due}). "
+            "Please help unblock it and agree an ETA with the owner.",
+        )
+
+    if task.status == "Blocked":
+        # Blocked with no known cause: ask the owner rather than escalate a guess. The text
+        # changes once the deadline passes, so the owner is asked again then.
+        when = f"overdue since {due}" if overdue else f"due {due}"
+        return Action(
+            task.task_id, "follow_up_owner", task.owner, "Blocked without a known cause",
+            f"{about(task)} is marked Blocked ({when}). Please say what is blocking it and give an ETA.",
         )
 
     if overdue:
