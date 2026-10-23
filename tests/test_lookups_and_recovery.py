@@ -98,7 +98,7 @@ class LookupFailureTests(unittest.TestCase):
         sender = Mock()
         sender.lookup.side_effect = [APIError(429), APIError(503), None]
         sender.send.return_value = True
-        self.assertEqual(self.service(sender).deliver(self.action), "sent")
+        self.assertEqual(self.service(sender).deliver(self.action)[0], "sent")
         self.assertEqual(sender.lookup.call_count, 3)
         self.assertEqual(pause.call_count, 2)
         sender.send.assert_called_once()
@@ -110,7 +110,7 @@ class LookupFailureTests(unittest.TestCase):
             with self.subTest(error=type(error).__name__, attempts=attempts):
                 sender = Mock()
                 sender.lookup.side_effect = error
-                self.assertEqual(self.service(sender).deliver(self.action), "failed")
+                self.assertEqual(self.service(sender).deliver(self.action)[0], "failed")
                 self.assertEqual(sender.lookup.call_count, attempts)
                 sender.send.assert_not_called()
 
@@ -118,10 +118,10 @@ class LookupFailureTests(unittest.TestCase):
     def test_unavailable_reconciliation_keeps_committed_receipt_for_restart(self, pause):
         sender = DeliveryAPI(self.store, timeout_after_commit_once=True)
         with patch.object(sender, "lookup", side_effect=[None, APIError(503), APIError(503), APIError(503)]):
-            self.assertEqual(self.service(sender).deliver(self.action), "failed")
+            self.assertEqual(self.service(sender).deliver(self.action)[0], "failed")
         self.assertEqual(sender.calls, 1)
         self.assertEqual(len(self.store.deliveries()), 1)
-        self.assertEqual(self.service(sender).deliver(self.action), "already_sent")
+        self.assertEqual(self.service(sender).deliver(self.action)[0], "already_sent")
         self.assertEqual(sender.calls, 1)
 
     @patch("followup.service.pause")
@@ -129,7 +129,7 @@ class LookupFailureTests(unittest.TestCase):
         sender = DeliveryAPI(self.store, timeout_after_commit_once=True)
         receipt = self.action.to_dict("sent")
         with patch.object(sender, "lookup", side_effect=[None, APIError(429), receipt]):
-            self.assertEqual(self.service(sender).deliver(self.action), "reconciled")
+            self.assertEqual(self.service(sender).deliver(self.action)[0], "reconciled")
         self.assertEqual(sender.calls, 1)
 
 

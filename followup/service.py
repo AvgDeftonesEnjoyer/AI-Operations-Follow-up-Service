@@ -41,7 +41,6 @@ class Service:
         self.today = today
         self.fallbacks = 0  # Notes the LLM could not classify in this run.
         self.delivery_down = False  # Set when retries run out on a temporary delivery error.
-        self.last_receipt = None  # The stored delivery found by the latest already_sent lookup.
 
     def fetch_tasks(self):
         for attempt in range(1, MAX_ATTEMPTS + 1):
@@ -67,12 +66,16 @@ class Service:
         return tasks
 
     def deliver(self, action):
-        """Send at most once per operation ID. Returns the delivery status."""
+        """Send at most once per operation ID.
+
+        Returns (status, receipt): the receipt is the stored earlier delivery when the status
+        is already_sent, otherwise None.
+        """
         key = action.operation_id
         # The provider kept failing earlier in this run: do not flood it; the next run resumes.
         if self.delivery_down:
             self.store.log("send_deferred", key, describe(action))
-            return "deferred"
+            return "deferred", None
         try:
             return self._deliver(action)
         except (APIError, AmbiguousTimeout) as error:
@@ -80,7 +83,7 @@ class Service:
             self.store.log("lookup_failed", key, f"{describe(action)}; {type(error).__name__}")
             if is_retryable(error):
                 self.delivery_down = True
-            return "failed"
+            return "failed", None
 
     def lookup(self, key):
         """Receipt lookup with the same bounded retries as sends."""
@@ -102,25 +105,24 @@ class Service:
         receipt = self.lookup(key)
         if receipt is not None:
             self.store.log("already_sent", key, describe(action))
-            self.last_receipt = receipt
-            return "already_sent"
+            return "already_sent", receipt
 
         for attempt in range(1, MAX_ATTEMPTS + 1):
             try:
                 created = self.delivery_api.send(key, body)
                 status = "sent" if created else "already_sent"
                 self.store.log(status, key, describe(action))
-                return status
+                return status, None
             except (APIError, AmbiguousTimeout) as error:
                 # Even a timeout is ambiguous: look up the stable operation ID.
                 if self.lookup(key) is not None:
                     self.store.log("reconciled_after_timeout", key, describe(action))
-                    return "reconciled"
+                    return "reconciled", None
                 if not is_retryable(error) or attempt == MAX_ATTEMPTS:
                     self.store.log("send_failed", key, f"{describe(action)}; {error}")
                     if is_retryable(error):  # Temporary errors outlasted every retry.
                         self.delivery_down = True
-                    return "failed"
+                    return "failed", None
                 self.store.log("send_retry", key, f"{describe(action)}; attempt {attempt}: {error}")
                 pause(attempt)
 
@@ -155,12 +157,11 @@ class Service:
                 continue
 
             action = replace(action, operation_id=task.operation_id(action))
-            self.last_receipt = None
-            status = self.deliver(action)
-            if status == "already_sent" and self.last_receipt:
+            status, receipt = self.deliver(action)
+            if receipt:
                 # Report what was delivered, not today's wording of the same request.
-                action = replace(action, reason=self.last_receipt.get("reason", action.reason),
-                                 message=self.last_receipt.get("message", action.message))
+                action = replace(action, reason=receipt.get("reason", action.reason),
+                                 message=receipt.get("message", action.message))
             if status in {"sent", "reconciled", "already_sent"}:
                 # Our own record of what was delivered: escalation timing must not depend on
                 # what a real provider keeps.
