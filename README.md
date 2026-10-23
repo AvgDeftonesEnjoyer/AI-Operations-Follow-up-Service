@@ -50,7 +50,7 @@ python main.py --db .data/failure_demo.sqlite \
   --timeout-after-commit-once
 ```
 
-The console and the audit log show `read_retry`, `send_retry`, and `reconciled_after_timeout`, with exactly one delivery per operation ID. Reads and sends make at most **3 attempts** with short exponential backoff and jitter; non-retryable 4xx errors are not retried.
+The console and the audit log show `read_retry`, `send_retry`, and `reconciled_after_timeout`, with exactly one delivery per operation ID. Reads and sends make at most **3 attempts** with short exponential backoff and jitter; non-retryable 4xx errors are not retried. If a temporary error outlasts the retries, the rest of that run's sends are reported as `deferred` instead of hammering the provider; the next run resumes them.
 
 ## Optional real LLM (Claude)
 
@@ -66,7 +66,7 @@ python main.py --llm claude --db .data/claude_demo.sqlite
 
 - **Structured output:** a JSON Schema (`output_config.format`) allows only `{"blocker_type": "none" | "materials" | "upstream"}`. The answer is validated again locally; extra fields, invalid JSON, refusals, truncated output, or unexpected content blocks trigger the deterministic fallback. Thinking blocks are ignored.
 - **The model cannot change facts or actions.** Owners, dates, status, recipients, and message text come from Python, never from the model. Notes are sent as untrusted data, and the system prompt says to ignore instructions inside them.
-- **Errors:** 429/5xx, timeouts, and network errors get one retry after 1 second, then the fallback. A rejected key (401/403) stops the run, because it is a configuration error, not a reason to run on the fallback silently. Each fallback is logged as `llm_fallback` with a short reason (`http_<status>`, `timeout`, `network_error`, `invalid_json`, `invalid_schema`, `truncated_output`, `refusal`, `unsupported_content`, `oversized_response`, `provider_error`); provider messages and keys are never logged.
+- **Errors:** 429/5xx, timeouts, and network errors get one retry after 1 second, then the fallback. Configuration errors — 400 (bad request), 401/403 (rejected key), 404 (unknown model) — stop the run: every call would fail the same way, so silently running on the fallback would hide the problem. Each fallback is logged as `llm_fallback` with a short reason (`http_<status>`, `timeout`, `network_error`, `invalid_json`, `invalid_schema`, `truncated_output`, `refusal`, `unsupported_content`, `oversized_response`, `provider_error`); provider messages and keys are never logged.
 - **Visible degradation and cost:** the run report stores `llm_fallbacks` (notes the model could not classify) and `llm_usage` (calls and token totals); the CLI prints a warning when any fallback happened.
 - **Hardening:** redirects are refused (the key never leaves api.anthropic.com), and responses are capped at 64 KiB.
 
@@ -90,27 +90,30 @@ Applied in priority order:
 | Situation | Decision | Target |
 | --- | --- | --- |
 | Task is `Done` | `no_action` | none |
-| Missing owner (or a placeholder such as `TBD`, `Unassigned`, `N/A`) | `clarify` | `coordination_queue` (a role, not an invented person) |
+| Missing owner (or a placeholder such as `TBD`, `Unassigned`, `Not assigned`) | `clarify` | `coordination_queue` (a role, not an invented person) |
 | Missing/invalid due date or unknown status | `clarify` | known owner |
-| Materials dependency | `request_eta` | `warehouse` when the notes name it, otherwise the owner |
+| Materials dependency, and the task is `Blocked` or overdue | `request_eta` | `warehouse` when the notes name it, otherwise the owner |
 | Status `Blocked`, or overdue and waiting on upstream work | `escalate` | `coordination_queue`; the message names the owner |
-| At least 7 days overdue | `escalate` | `coordination_queue`; the message names the owner |
-| 1–6 days overdue | `follow_up_owner` | known owner |
-| Otherwise | `no_action` | none |
+| Still overdue 3+ days after the owner's follow-up | `escalate` | `coordination_queue`; the message names the owner and the follow-up date |
+| Overdue | `follow_up_owner` | known owner |
+| Otherwise (including a dependency on a task that is on time) | `no_action` | none |
 
-Every message starts with the task ID, title, and project; reminders, ETA requests, and escalations also give the due date, so the recipient needs no other context. The 7-day threshold and `coordination_queue` are demo assumptions in `followup/rules.py`. Missing or invalid dates are never guessed. A valid model classification is used as returned; without one, `followup/notes.py` uses small English keyword lists: a waiting word (`awaiting`, `waiting`, `pending`, `delayed`, `backorder`, `out of stock`, `not yet delivered`…) plus a materials word (`materials`, `parts`, `equipment`, `cable`, `conduit`…) means `materials`; a waiting word alone means `upstream`; `resolved`/`received`/`no longer` means `none`. A negated blocking word (`no backorder`, `not delayed`, `nothing pending`) does not count. Mixed notes ("resolved, but still waiting") are the LLM's job.
+The owner is always asked first: even a long-overdue task gets a follow-up, and escalates only if it is still overdue three days after that follow-up (`ESCALATE_AFTER_DAYS` and `coordination_queue` are demo assumptions in `followup/rules.py`). Every message starts with the task ID, title, and project; reminders, ETA requests, and escalations also give the due date, so the recipient needs no other context. Missing or invalid dates are never guessed.
+
+A valid model classification is used as returned; without one, `followup/notes.py` uses small English keyword lists: a waiting word (`awaiting`, `waiting`, `pending`, `delayed`, `backorder`, `out of stock`, `not yet delivered`, `never arrived`…) plus a materials word (`materials`, `parts`, `cable`, `delivery`, `supplier`, `warehouse`…) means `materials`; a waiting word alone means `upstream`; `resolved`/`received`/`arrived`/`no longer` means `none` unless the same clause says it has not happened yet (`not yet received`, `until materials are received`). A negated blocking word (`no backorder`, `not delayed`, `nothing pending`) does not count. Mixed notes ("resolved, but still waiting") are the LLM's job.
 
 ### Why repeated runs are safe
 
 - **Stable operation ID.** `Task.fingerprint()` hashes the normalized task state with the decision and target. The mock delivery server stores it as a unique SQLite key, so the same task/action/state is delivered once.
 - **Reconciliation.** The service looks the receipt up **before** sending and again after any timeout or error. When the server committed a delivery but the response was lost, the lookup finds it and no second send happens.
 - **Pinned classification.** The note label is stored per task state, so a model that answers differently on the next run cannot change the action and its operation ID. A fallback label is pinned too, until the task changes. Date rules are recomputed, so a reminder can later become an escalation.
+- **Honest reports.** An `already_sent` row shows the reason and message that were actually delivered, not today's wording.
 - **Concurrency.** Receipts and labels use `INSERT OR IGNORE`; a worker that loses the race reports `already_sent`.
 - **Partial batches.** Each decision is reported as soon as it is final, so a mid-batch failure keeps finished results. A crash after a committed send is reported as `already_sent` on the next run.
 
 ### Input validation
 
-All task fields must be strings or null, valid Unicode, at most 4,000 characters. Errors name the record and field (`Task #2: last_update must be a string or null`), never the value. Missing or duplicate task IDs abort ingestion **before any send**. Dates must be `YYYY-MM-DD`; invalid due dates trigger clarification. IDs are trimmed and uppercased. Statuses are case-insensitive, with common synonyms (`Completed`/`Closed` → `Done`, `In Progress` → `Working on it`); any other status asks the owner to clarify. Fixtures saved as UTF-8 (with or without a byte order mark), UTF-16, or UTF-32 are accepted. Fixture, database, and report paths must differ, so a report can never overwrite the delivery receipts.
+All task fields must be strings or null, valid Unicode, at most 4,000 characters. Errors name the record and field (`Task #2: last_update must be a string or null`), never the value. Missing or duplicate task IDs abort ingestion **before any send**. Dates must be `YYYY-MM-DD`; invalid due dates trigger clarification. IDs are trimmed and uppercased. Statuses are case-insensitive, with common synonyms (`Completed`/`Closed`/`Finished` → `Done`, `In Progress` → `Working on it`); any other status asks the owner to clarify. Fixtures saved as UTF-8 (with or without a byte order mark), UTF-16, or UTF-32 are accepted. Fixture, database, and report paths must differ, so a report can never overwrite the delivery receipts.
 
 ## Assumptions and trade-offs
 

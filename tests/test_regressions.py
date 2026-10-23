@@ -81,6 +81,25 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(len(self.store.deliveries()), 2)
         ai.interpret.assert_called_once()
 
+    def test_long_overdue_task_asks_the_owner_first_then_escalates(self):
+        self.fixture.write_text(json.dumps([{**ROW, "due_date": "2026-10-10", "notes": ""}]))
+        ai = Mock(interpret=Mock(return_value="none"))
+        first = self.run_service(ai)
+        self.assertEqual((first[0]["decision"], first[0]["target"]), ("follow_up_owner", "Sam"))
+        # A rerun with unchanged data, even days later, sends nothing new before the grace ends.
+        self.assertEqual(self.run_service(ai, date(2026, 10, 23))[0]["delivery_status"], "already_sent")
+        later = self.run_service(ai, date(2026, 10, 24))
+        self.assertEqual((later[0]["decision"], later[0]["delivery_status"]), ("escalate", "sent"))
+        self.assertIn("asked on 2026-10-21", later[0]["message"])
+        self.assertEqual(len(self.store.deliveries()), 2)
+
+    def test_already_sent_reports_what_was_actually_delivered(self):
+        ai = Mock(interpret=Mock(return_value="none"))
+        self.run_service(ai)
+        again = self.run_service(ai, date(2026, 10, 22))  # Today's wording would say "2 days".
+        self.assertEqual((again[0]["delivery_status"], again[0]["reason"]),
+                         ("already_sent", "Overdue by 1 day"))
+
     def test_bad_field_types_fail_before_any_delivery(self):
         for field in ROW:
             for value in [False, 123, ["Sam"], {"name": "Sam"}]:
@@ -142,6 +161,11 @@ class RegressionTests(unittest.TestCase):
             ("Unable to proceed until upstream splice confirmed.", "escalate", "coordination_queue"),
             ("Waiting on city permit.", "escalate", "coordination_queue"),
             ("Awaiting materials, no delay expected.", "request_eta", "Sam"),
+            ("Awaiting warehouse delivery.", "request_eta", "warehouse"),
+            ("Unable to proceed until materials are received from warehouse.", "request_eta", "warehouse"),
+            ("Waiting on fiber delivery from vendor.", "request_eta", "Sam"),
+            ("Materials have not arrived yet.", "request_eta", "Sam"),
+            ("Waiting for materials; nothing received.", "request_eta", "Sam"),
             ("Backorder resolved.", "follow_up_owner", "Sam"),
             ("No material shortage.", "follow_up_owner", "Sam"),
             ("No backorder, parts on site.", "follow_up_owner", "Sam"),
@@ -181,7 +205,7 @@ class RegressionTests(unittest.TestCase):
             return BytesIO(json.dumps({"stop_reason": stop_reason, "content": blocks}).encode())
 
         cases = [
-            ({"side_effect": http_error(400)}, "http_400"),
+            ({"side_effect": http_error(413)}, "http_413"),
             ({"side_effect": http_error(429)}, "http_429"),
             ({"side_effect": http_error(529)}, "http_529"),
             ({"side_effect": TimeoutError()}, "timeout"),

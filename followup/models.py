@@ -13,13 +13,15 @@ STATUSES = {
     "completed": "Done",
     "complete": "Done",
     "closed": "Done",
+    "finished": "Done",
     "blocked": "Blocked",
     "working on it": "Working on it",
     "in progress": "Working on it",
     "not started": "Not Started",
 }
 # Placeholder text in the owner field means that nobody is assigned yet.
-NO_OWNER = {"tbd", "tba", "n/a", "na", "none", "null", "unassigned", "unknown", "-", "?"}
+NO_OWNER = {"tbd", "tba", "n/a", "na", "none", "null", "unassigned", "not assigned", "unknown",
+            "-", "?"}
 
 
 def clean(data, field):

@@ -9,8 +9,9 @@ from .notes import simple_interpretation
 
 
 BLOCKER_TYPES = {"none", "materials", "upstream"}
-# A rejected key is a configuration error: stop instead of quietly running on the fallback.
-FATAL_REASONS = {"http_401", "http_403"}
+# Configuration errors (bad request, rejected key, unknown model) would fail every call:
+# stop the run instead of quietly running on the fallback.
+FATAL_REASONS = {"http_400", "http_401", "http_403", "http_404"}
 
 
 class NoRedirects(request.HTTPRedirectHandler):
@@ -149,7 +150,7 @@ def interpret_safely(ai, notes: str) -> tuple[str, str | None]:
     """Return (blocker_type, fallback_reason); the reason is None when the model answer is used."""
     try:
         label = ai.interpret(notes)
-    except AIError as exc:  # Bad provider responses must not stop the batch; a bad key must.
+    except AIError as exc:  # Bad provider responses must not stop the batch; bad config must.
         if exc.reason in FATAL_REASONS:
             raise
         return simple_interpretation(notes), exc.reason

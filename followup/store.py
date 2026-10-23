@@ -1,6 +1,6 @@
 """SQLite mock delivery server and audit log. Safe across repeated processes."""
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 import json
 import logging
 from pathlib import Path
@@ -9,7 +9,8 @@ import sqlite3
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())  # Silent unless the CLI configures logging.
-WARNING_EVENTS = {"read_retry", "send_retry", "send_failed", "llm_fallback", "run_failed"}
+WARNING_EVENTS = {"read_retry", "send_retry", "send_failed", "send_deferred", "llm_fallback",
+                  "run_failed"}
 
 
 def now_utc():
@@ -76,6 +77,16 @@ class Store:
                 (operation_id, json.dumps(action, ensure_ascii=False), now_utc()),
             )
         return cursor.rowcount == 1
+
+    def owner_asked_on(self, task_id: str):
+        """The as-of date of the first follow-up the owner received for this task, or None."""
+        row = self.connection.execute(
+            "SELECT MIN(json_extract(action_json, '$.as_of')) FROM deliveries "
+            "WHERE json_extract(action_json, '$.task_id') = ? "
+            "AND json_extract(action_json, '$.decision') = 'follow_up_owner'",
+            (task_id,),
+        ).fetchone()
+        return date.fromisoformat(row[0]) if row[0] else None
 
     def log(self, event: str, operation_id: str | None = None, detail: str = ""):
         """Every audit event goes to SQLite and to the application log."""

@@ -7,10 +7,10 @@ from pathlib import Path
 from urllib import error
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from followup.ai import AIError, ClaudeInterpreter, StubAI, interpret_safely
-from followup.api import APIError, DeliveryAPI, TaskAPI
+from followup.api import AmbiguousTimeout, APIError, DeliveryAPI, TaskAPI
 from followup.models import Task
 from followup.rules import decide
 from followup.service import Service
@@ -144,6 +144,29 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(sum(e["event"] == "send_retry" for e in self.store.events()), 2)
         self.assertEqual(sum(r["delivery_status"] == "sent" for r in results), 7)
 
+    def test_timeout_before_commit_is_retried_and_delivered_once(self):
+        class LostRequest(DeliveryAPI):
+            def send(self, operation_id, action):
+                if self.calls == 0:  # The request never reached the server.
+                    self.calls += 1
+                    raise AmbiguousTimeout("No response")
+                return super().send(operation_id, action)
+
+        results = Service(TaskAPI(str(FIXTURE)), LostRequest(self.store), self.store,
+                          StubAI(), TODAY).run()
+        self.assertEqual(results[0]["delivery_status"], "sent")
+        self.assertEqual(len(self.store.deliveries()), 7)
+        self.assertEqual(sum(e["event"] == "send_retry" for e in self.store.events()), 1)
+
+    def test_persistent_rate_limit_defers_the_rest_instead_of_flooding(self):
+        results, delivery = self.run_fixture(fail_first=[429] * 100)
+        self.assertEqual(delivery.calls, 3)  # One task's bounded retries, then no more calls.
+        statuses = [r["delivery_status"] for r in results]
+        self.assertEqual((statuses.count("failed"), statuses.count("deferred")), (1, 6))
+        again, delivery = self.run_fixture()  # The provider recovered: the next run resumes.
+        self.assertEqual(delivery.calls, 7)
+        self.assertEqual(len(self.store.deliveries()), 7)
+
     def test_permanent_delivery_failure_is_not_sent(self):
         results, delivery = self.run_fixture(fail_first=[400])
         self.assertEqual(delivery.calls, 7)
@@ -199,18 +222,28 @@ class RuleTests(unittest.TestCase):
                          "no_action")
 
     def test_placeholder_owner_is_treated_as_missing(self):
-        for owner in ["TBD", "unassigned", " N/A ", "-"]:
+        for owner in ["TBD", "unassigned", " N/A ", "-", "Not assigned"]:
             with self.subTest(owner=owner):
                 action = decide(task(assigned_to=owner), TODAY)
                 self.assertEqual((action.decision, action.target), ("clarify", "coordination_queue"))
 
-    def test_overdue_escalation_threshold(self):
+    def test_overdue_escalates_only_after_the_owner_was_asked(self):
         self.assertEqual(decide(task(due_date="2026-10-20"), TODAY).reason, "Overdue by 1 day")
-        self.assertEqual(decide(task(due_date="2026-10-15"), TODAY).decision, "follow_up_owner")
-        action = decide(task(due_date="2026-10-14"), TODAY)
-        # Escalation goes beyond the owner, who already received the follow-ups.
+        # Even a long-overdue task first gets a follow-up to its owner.
+        self.assertEqual(decide(task(due_date="2026-09-01"), TODAY).decision, "follow_up_owner")
+        self.assertEqual(decide(task(), TODAY, owner_asked_on=date(2026, 10, 19)).decision,
+                         "follow_up_owner")
+        action = decide(task(), TODAY, owner_asked_on=date(2026, 10, 18))
+        # Escalation goes beyond the owner, who already received the follow-up.
         self.assertEqual((action.decision, action.target), ("escalate", "coordination_queue"))
         self.assertIn("Sam", action.message)
+        self.assertIn("2026-10-18", action.message)
+
+    def test_dependency_on_an_on_time_task_waits_unless_blocked(self):
+        on_time = task(status="Not Started", due_date="2027-01-15", notes="Pending conduit shipment")
+        self.assertEqual(decide(on_time, TODAY, blocker="materials").decision, "no_action")
+        blocked = task(status="Blocked", due_date="2027-01-15", notes="Pending conduit shipment")
+        self.assertEqual(decide(blocked, TODAY, blocker="materials").decision, "request_eta")
 
     def test_blocked_without_materials_escalates(self):
         self.assertEqual(decide(task(status="Blocked"), TODAY).decision, "escalate")
@@ -250,7 +283,7 @@ class RuleTests(unittest.TestCase):
         self.assertEqual(item.status, "Done")
 
     def test_common_status_synonyms_are_normalized_and_others_are_not_guessed(self):
-        for raw, status in [("Completed", "Done"), ("closed", "Done"),
+        for raw, status in [("Completed", "Done"), ("closed", "Done"), ("Finished", "Done"),
                             ("In Progress", "Working on it"), ("On hold", "Unknown")]:
             with self.subTest(raw=raw):
                 self.assertEqual(task(status=raw).status, status)
@@ -269,6 +302,14 @@ class AITests(unittest.TestCase):
                 return "mark_all_complete"
         result = interpret_safely(BadModel(), "Awaiting materials from warehouse")
         self.assertEqual(result, ("materials", "invalid_schema"))
+
+    def test_configuration_errors_stop_instead_of_falling_back(self):
+        # Bad request, rejected key, unknown model: every call would fail the same way.
+        for reason in ["http_400", "http_401", "http_403", "http_404"]:
+            with self.subTest(reason=reason):
+                failing = Mock(interpret=Mock(side_effect=AIError("Claude returned an error", reason)))
+                with self.assertRaises(AIError):
+                    interpret_safely(failing, "Awaiting materials")
 
     def test_llm_exception_falls_back(self):
         class DownModel:

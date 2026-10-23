@@ -30,6 +30,7 @@ class Service:
         self.ai = ai
         self.today = today
         self.fallbacks = 0  # Notes the LLM could not classify in this run.
+        self.delivery_down = False  # Set when retries run out on a temporary delivery error.
 
     def fetch_tasks(self):
         for attempt in range(1, MAX_ATTEMPTS + 1):
@@ -58,11 +59,17 @@ class Service:
         key = action.operation_id
         body = {k: v for k, v in action.to_dict("pending").items()
                 if k != "delivery_status"}
+        body["as_of"] = self.today.isoformat()
 
         # Reconciliation first: a previous run may have timed out after sending.
         if self.delivery_api.lookup(key) is not None:
             self.store.log("already_sent", key)
             return "already_sent"
+
+        # The provider kept failing earlier in this run: do not flood it; the next run resumes.
+        if self.delivery_down:
+            self.store.log("send_deferred", key)
+            return "deferred"
 
         for attempt in range(1, MAX_ATTEMPTS + 1):
             try:
@@ -78,6 +85,8 @@ class Service:
                 retryable = isinstance(error, AmbiguousTimeout) or error.retryable
                 if not retryable or attempt == MAX_ATTEMPTS:
                     self.store.log("send_failed", key, str(error))
+                    if retryable:  # Temporary errors outlasted every retry.
+                        self.delivery_down = True
                     return "failed"
                 self.store.log("send_retry", key, f"Attempt {attempt}: {error}")
                 pause(attempt)
@@ -100,7 +109,7 @@ class Service:
                         self.store.log("llm_fallback",
                                        detail=f"Task {task.task_id}; reason={fallback_reason}")
 
-            action = decide(task, self.today, blocker)
+            action = decide(task, self.today, blocker, self.store.owner_asked_on(task.task_id))
             if action.decision == "no_action":
                 yield action.to_dict("not_needed")
                 continue
@@ -109,6 +118,10 @@ class Service:
                 action, operation_id=task.fingerprint(action.decision, action.target)
             )
             status = self.deliver(action)
+            if status == "already_sent":
+                # Report what the recipient actually got; today's wording can differ ("12 days").
+                sent = self.delivery_api.lookup(action.operation_id)
+                action = replace(action, reason=sent["reason"], message=sent["message"])
             yield action.to_dict(status)
 
     def run(self):

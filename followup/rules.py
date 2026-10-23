@@ -6,7 +6,7 @@ from .models import Action, Task
 from .notes import warehouse_dependency
 
 
-ESCALATE_AFTER_DAYS = 7
+ESCALATE_AFTER_DAYS = 3  # Days the owner has to answer a follow-up before escalation.
 COORDINATION_QUEUE = "coordination_queue"  # A role, not an invented person.
 
 
@@ -16,8 +16,12 @@ def about(task: Task) -> str:
     return f"{text} ({task.project})" if task.project else text
 
 
-def decide(task: Task, today: date, blocker: str = "none") -> Action:
-    """Choose one safe action. Missing facts take priority over reminders."""
+def decide(task: Task, today: date, blocker: str = "none",
+           owner_asked_on: date | None = None) -> Action:
+    """Choose one safe action. Missing facts take priority over reminders.
+
+    owner_asked_on is the date the owner first received a follow-up for this task, if ever.
+    """
     if task.status == "Done":
         return Action(task.task_id, "no_action", None, "Task is completed", None)
 
@@ -43,7 +47,12 @@ def decide(task: Task, today: date, blocker: str = "none") -> Action:
         )
 
     due = task.due_date.isoformat()
-    if blocker == "materials":
+    days_overdue = (today - task.due_date).days
+    overdue = days_overdue > 0
+    # A dependency mentioned in notes needs action only once the task is Blocked or overdue.
+    needs_attention = task.status == "Blocked" or overdue
+
+    if blocker == "materials" and needs_attention:
         # The warehouse is asked only when the notes name it; otherwise the owner chases the ETA.
         target = "warehouse" if warehouse_dependency(task.notes) else task.owner
         return Action(
@@ -51,10 +60,7 @@ def decide(task: Task, today: date, blocker: str = "none") -> Action:
             f"{about(task)} is waiting for materials (due {due}). Please confirm the delivery ETA.",
         )
 
-    days_overdue = (today - task.due_date).days
-    # Escalations go to the coordination role: the owner has already been asked directly.
-    # A dependency mentioned in notes needs no escalation while the task is still on time.
-    if task.status == "Blocked" or (blocker == "upstream" and days_overdue > 0):
+    if task.status == "Blocked" or (blocker == "upstream" and overdue):
         reason = "Upstream dependency" if blocker == "upstream" else "Task is blocked"
         return Action(
             task.task_id, "escalate", COORDINATION_QUEUE, reason,
@@ -62,14 +68,17 @@ def decide(task: Task, today: date, blocker: str = "none") -> Action:
             "Please help unblock it and agree an ETA with the owner.",
         )
 
-    if days_overdue >= ESCALATE_AFTER_DAYS:
+    # The owner is always asked first; escalate only if the task is still overdue days later.
+    if overdue and owner_asked_on and (today - owner_asked_on).days >= ESCALATE_AFTER_DAYS:
+        asked = owner_asked_on.isoformat()
         return Action(
-            task.task_id, "escalate", COORDINATION_QUEUE, f"Overdue by {days_overdue} days",
-            f"{about(task)} is {days_overdue} days overdue (owner: {task.owner}, due {due}). "
-            "Please agree a recovery plan and ETA with the owner.",
+            task.task_id, "escalate", COORDINATION_QUEUE,
+            f"Overdue by {days_overdue} days; owner asked on {asked}",
+            f"{about(task)} is {days_overdue} days overdue (owner: {task.owner}, due {due}); "
+            f"the owner was asked on {asked}. Please agree a recovery plan and ETA with the owner.",
         )
 
-    if days_overdue > 0:
+    if overdue:
         days = "1 day" if days_overdue == 1 else f"{days_overdue} days"
         return Action(
             task.task_id, "follow_up_owner", task.owner, f"Overdue by {days}",
