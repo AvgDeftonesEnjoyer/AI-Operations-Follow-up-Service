@@ -20,7 +20,7 @@ def decide(task: Task, today: date, blocker: str = "none",
            owner_asked_on: date | None = None) -> Action:
     """Choose one safe action. Missing facts take priority over reminders.
 
-    owner_asked_on is the date this owner first got a follow-up for this deadline, if ever.
+    owner_asked_on is the date this owner was first asked about this deadline, if ever.
     Messages contain no day counts, so the same action always gets the same text.
     """
     if task.status == "Done":
@@ -68,13 +68,6 @@ def decide(task: Task, today: date, blocker: str = "none",
             "Please help unblock it and agree an ETA with the owner.",
         )
 
-    if task.status == "Blocked":
-        # Blocked with no known cause: ask the owner rather than escalate a guess.
-        return Action(
-            task.task_id, "clarify", task.owner, "Blocker not explained",
-            f"{about(task)} is marked Blocked (due {due}). Please say what is blocking it and give an ETA.",
-        )
-
     # The owner is asked first; if the task is still overdue days later, coordination steps in.
     if overdue and owner_asked_on and (today - owner_asked_on).days >= ESCALATE_AFTER_DAYS:
         asked = owner_asked_on.isoformat()
@@ -83,6 +76,13 @@ def decide(task: Task, today: date, blocker: str = "none",
             f"Overdue since {due}; owner asked on {asked}",
             f"{about(task)} has been overdue since {due} (owner: {task.owner}); the owner was "
             f"asked on {asked}. Please agree a recovery plan and ETA with the owner.",
+        )
+
+    if task.status == "Blocked":
+        # Blocked with no known cause: ask the owner rather than escalate a guess.
+        return Action(
+            task.task_id, "clarify", task.owner, "Blocker not explained",
+            f"{about(task)} is marked Blocked (due {due}). Please say what is blocking it and give an ETA.",
         )
 
     if overdue:

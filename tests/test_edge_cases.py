@@ -138,6 +138,35 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual((result["decision"], result["delivery_status"]), ("escalate", "sent"))
         self.assertEqual(len(provider.receipts), 2)
 
+    def test_another_spelling_of_owner_or_deadline_is_not_a_new_message(self):
+        overdue = {**ROW, "assigned_to": "Sam Lee", "due_date": "2026-10-10", "notes": ""}
+        self.fixture.write_text(json.dumps([overdue]))
+        self.run_service(Mock())  # Follow-up on 10-21.
+        self.fixture.write_text(json.dumps([{**overdue, "assigned_to": "sam lee",
+                                             "due_date": "2026-10-10T00:00:00Z"}]))
+        self.assertEqual(self.run_service(Mock(), date(2026, 10, 22))[0]["delivery_status"], "already_sent")
+        later = self.run_service(Mock(), date(2026, 10, 24))[0]  # The clock did not restart.
+        self.assertEqual(later["decision"], "escalate")
+        self.assertEqual(len(self.store.deliveries()), 2)
+
+    def test_marking_an_overdue_task_blocked_does_not_stop_escalation(self):
+        overdue = {**ROW, "due_date": "2026-10-10", "notes": ""}
+        self.fixture.write_text(json.dumps([overdue]))
+        self.run_service(Mock())  # Follow-up on 10-21.
+        self.fixture.write_text(json.dumps([{**overdue, "status": "Blocked"}]))
+        self.assertEqual(self.run_service(Mock(), date(2026, 10, 24))[0]["decision"], "escalate")
+
+    def test_fallback_label_is_kept_only_once_an_action_was_delivered(self):
+        self.fixture.write_text(json.dumps([{**ROW, "notes": "Awaiting materials"}]))
+        down = Mock(interpret=Mock(side_effect=AIError("down", "http_529")))
+        with patch("followup.service.pause"):
+            first = Service(TaskAPI(str(self.fixture)), DeliveryAPI(self.store, fail_first=[503] * 3),
+                            self.store, down, TODAY).run()[0]
+        self.assertEqual(first["delivery_status"], "failed")
+        healthy = Mock(interpret=Mock(return_value="materials"))
+        self.assertEqual(self.run_service(healthy)[0]["decision"], "request_eta")
+        healthy.interpret.assert_called_once()  # Nothing was delivered, so the model is asked again.
+
     def test_touching_last_update_daily_does_not_postpone_escalation(self):
         ai = Mock(interpret=Mock(return_value="none"))
         overdue = {**ROW, "due_date": "2026-10-10", "notes": "No update since Monday."}
@@ -262,7 +291,15 @@ class RegressionTests(unittest.TestCase):
             ("Materials shortage.", "request_eta", "Sam"),
             ("Materials not available.", "request_eta", "Sam"),
             ("Short on conduit; supplier says two weeks.", "request_eta", "Sam"),
-            ("Need handhole boxes from warehouse.", "request_eta", "warehouse"),
+            # "Need" can mean returning things too: not a blocker, so the owner is asked.
+            ("Need handhole boxes from warehouse.", "follow_up_owner", "Sam"),
+            ("Need to return extra cable to the warehouse.", "follow_up_owner", "Sam"),
+            ("Shipping delayed.", "request_eta", "Sam"),
+            ("Order has not arrived.", "request_eta", "Sam"),
+            ("Materials ETA TBD.", "request_eta", "Sam"),
+            ("Missing hardware.", "request_eta", "Sam"),
+            ("Waiting on inventory.", "request_eta", "Sam"),
+            ("Waiting for work order approval.", "follow_up_owner", "Sam"),
             ("Permit received, but still waiting on conduit delivery from warehouse.", "request_eta", "warehouse"),
             ("Vendor shipment delayed; warehouse not involved.", "request_eta", "Sam"),
             ("Warehouse delivered the cable; waiting for city permit.", "escalate", "coordination_queue"),

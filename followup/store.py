@@ -90,23 +90,23 @@ class Store:
         return cursor.rowcount == 1
 
     def record_action(self, action, due_date: str | None, as_of: date):
-        """Remember a confirmed delivery; the first date wins."""
+        """Remember a confirmed delivery; the first date wins. Targets are kept casefolded."""
         with self.connection:
             self.connection.execute(
                 "INSERT OR IGNORE INTO actions VALUES (?, ?, ?, ?, ?, ?)",
-                (action.operation_id, action.task_id, action.decision, action.target,
-                 due_date, as_of.isoformat()),
+                (action.operation_id, action.task_id, action.decision,
+                 (action.target or "").casefold(), due_date, as_of.isoformat()),
             )
 
     def owner_asked_on(self, task_id: str, owner: str | None, due_date: str | None):
-        """The date this owner first got a follow-up for this deadline, or None.
+        """The date this owner was first asked about this deadline (follow-up or clarify), or None.
 
-        A new owner or a moved deadline starts over with a fresh follow-up.
+        A new owner or a moved deadline starts over with a fresh question.
         """
         row = self.connection.execute(
-            "SELECT MIN(as_of) FROM actions WHERE task_id = ? AND decision = 'follow_up_owner' "
-            "AND target = ? AND due_date = ?",
-            (task_id, owner, due_date),
+            "SELECT MIN(as_of) FROM actions WHERE task_id = ? "
+            "AND decision IN ('follow_up_owner', 'clarify') AND target = ? AND due_date = ?",
+            (task_id, (owner or "").casefold(), due_date),
         ).fetchone()
         return date.fromisoformat(row[0]) if row[0] else None
 

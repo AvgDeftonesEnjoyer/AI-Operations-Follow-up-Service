@@ -225,7 +225,8 @@ class RuleTests(unittest.TestCase):
 
     def test_placeholder_owner_is_treated_as_missing(self):
         for owner in ["TBD", "unassigned", " N/A ", "-", "Not assigned", "No owner",
-                      "Not yet assigned", "(unassigned)", "TBD - PM to assign"]:
+                      "Not yet assigned", "(unassigned)", "TBD - PM to assign", "PM to assign",
+                      "Pending", "Vacant", "Nobody", "Open"]:
             with self.subTest(owner=owner):
                 action = decide(task(assigned_to=owner), TODAY)
                 self.assertEqual((action.decision, action.target), ("clarify", "coordination_queue"))

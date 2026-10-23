@@ -7,15 +7,15 @@ gets the reminder: richer or ambiguous notes are the LLM's job, not this fallbac
 import re
 
 
-ITEMS = (r"materials?|supplies|parts|equipment|cable|conduit|shipment|deliver(?:y|ies)|"
-         r"backorder\w*|out of stock|shortage")
+ITEMS = (r"materials?|supplies|parts|equipment|hardware|cable|conduit|inventory|stock|shipment|"
+         r"shipping|(?<!work )order|deliver(?:y|ies)|backorder\w*|shortage")
 MATERIALS = re.compile(rf"\b({ITEMS}|warehouse|supplier|vendor)\b")
 MATERIAL_ITEMS = re.compile(rf"\b({ITEMS})\b")
 # A blocker cue: waiting for, short of, or not received. What it waits for decides the kind.
 WAITING = re.compile(
     r"\b(await\w*|waiting|pending|blocked|held up|on order|dependent on|depends on|backorder\w*|"
-    r"out of|shortage|short on|missing|not available|unavailable|need\w*|delay\w*|late|ran out|"
-    r"run out|(?:proceed|start) until|(?:date|eta) unknown|unknown eta|no eta|"
+    r"out of|shortage|short on|missing|not available|unavailable|delay\w*|late|ran out|"
+    r"run out|(?:proceed|start) until|(?:date|eta) (?:unknown|tbd)|unknown eta|no eta|"
     r"no (?:materials?|supplies|parts|equipment|cable|conduit))\b"
     r"|(?:\bnot|\bnever|\bnothing|n't) (?:yet )?(?:been )?(?:deliver|ship|receiv|arriv)\w*"
 )
@@ -24,7 +24,7 @@ UPSTREAM = re.compile(r"\b(upstream|permit)\b")
 # "No backorder", "not delayed", "no need for parts": a negated blocker is not a blocker.
 NEGATED = re.compile(
     r"\b(?:no|not|nothing|never) (?:await\w*|waiting|pending|delay\w*|backorder\w*|out of stock|"
-    r"blocked (?:by|on)|dependent on|upstream|need\w*)\b|\bno (?:\w+ )?(?:shortage|missing)\b"
+    r"blocked (?:by|on)|dependent on|upstream)\b|\bno (?:\w+ )?(?:shortage|missing)\b"
 )
 RESOLVED = re.compile(r"\b(resolved|received|arrived|delivered|completed|approved|cleared|no longer)\b")
 # "Not yet received", "until it is received", "awaiting approved materials": not done yet.

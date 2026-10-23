@@ -20,8 +20,9 @@ STATUSES = {
     "not started": "Not Started",
 }
 # Placeholder text in the owner field means that nobody is assigned yet.
-NO_OWNER = {"tbd", "tba", "n/a", "na", "none", "null", "unknown", "-", "?"}
-NO_OWNER_PHRASE = re.compile(r"\b(unassigned|no owner|not (?:yet )?assigned|tb[ad])\b")
+NO_OWNER = {"tbd", "tba", "n/a", "na", "none", "null", "unknown", "pending", "vacant", "nobody",
+            "open", "-", "?"}
+NO_OWNER_PHRASE = re.compile(r"\b(unassigned|no owner|not (?:yet )?assigned|to (?:be )?assign(?:ed)?|tb[ad])\b")
 
 
 def clean(data, field):
@@ -101,16 +102,23 @@ class Task:
         """Key for the notes classification: new note text is classified anew."""
         return digest({"task_id": self.task_id, "notes": self.notes})
 
+    @property
+    def due_key(self):
+        """The deadline as one spelling: "2026-10-18" and "2026-10-18T00:00:00Z" are the same."""
+        return self.due_date.isoformat() if self.due_date else self.due_raw
+
     def operation_id(self, action):
         """One message per task, action, recipient, reason and deadline.
 
         Notes and last_update are left out, so editing or touching a task never resends the
-        same request. Everything the message text depends on is in, so one ID is one text.
+        same request; the task name is in, because the message names it. Owner spelling
+        ("Sam Lee" or "sam lee") and deadline spelling do not count as changes.
         """
         return digest({
             "task_id": self.task_id, "title": self.title, "project": self.project,
-            "owner": self.owner, "due_date": self.due_raw,
-            "decision": action.decision, "target": action.target, "reason": action.reason,
+            "owner": self.owner.casefold() if self.owner else None, "due_date": self.due_key,
+            "decision": action.decision, "target": (action.target or "").casefold(),
+            "reason": action.reason,
         })
 
 
