@@ -41,12 +41,31 @@ class Service:
                 pause(attempt)
 
     def deliver(self, action):
+        try:
+            return self._deliver(action)
+        except (APIError, AmbiguousTimeout) as error:
+            # A failed lookup is not evidence that no delivery exists.
+            self.store.log("lookup_failed", action.operation_id, type(error).__name__)
+            return "failed"
+
+    def lookup_receipt(self, key):
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            try:
+                return self.delivery_api.lookup(key)
+            except (APIError, AmbiguousTimeout) as error:
+                retryable = isinstance(error, AmbiguousTimeout) or error.retryable
+                if not retryable or attempt == MAX_ATTEMPTS:
+                    raise
+                self.store.log("lookup_retry", key, f"Attempt {attempt}")
+                pause(attempt)
+
+    def _deliver(self, action):
         key = action.operation_id
         body = {k: v for k, v in action.to_dict("pending").items()
                 if k != "delivery_status"}
 
         # Reconciliation first: a previous run may have timed out after sending.
-        if self.delivery_api.lookup(key) is not None:
+        if self.lookup_receipt(key) is not None:
             self.store.log("already_sent", key)
             return "already_sent"
 
@@ -58,7 +77,7 @@ class Service:
                 return status
             except (APIError, AmbiguousTimeout) as error:
                 # Even a timeout is ambiguous: look up the stable operation ID.
-                if self.delivery_api.lookup(key) is not None:
+                if self.lookup_receipt(key) is not None:
                     self.store.log("reconciled_after_timeout", key)
                     return "reconciled"
                 retryable = isinstance(error, AmbiguousTimeout) or error.retryable
