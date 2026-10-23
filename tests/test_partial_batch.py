@@ -19,6 +19,12 @@ ROW = dict(task_id="A", project="Demo", task="Inspect", assigned_to="Sam",
 
 class PartialBatchTests(unittest.TestCase):
     def test_failure_mid_batch_keeps_finished_decisions(self):
+        # Ctrl+C is handled like a crash: the finished decision is still reported.
+        for crash in [RuntimeError("disk failure"), KeyboardInterrupt()]:
+            with self.subTest(crash=type(crash).__name__):
+                self.check_crash_mid_batch(crash)
+
+    def check_crash_mid_batch(self, crash):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             fixture = root / "tasks.json"
@@ -40,14 +46,14 @@ class PartialBatchTests(unittest.TestCase):
                 calls.append(key)
                 if len(calls) == 2:
                     # Not an API error (those are retried): an unexpected crash mid-batch.
-                    raise RuntimeError("disk failure")
+                    raise crash
                 return real_lookup(api, key)
 
             with patch.object(DeliveryAPI, "lookup", lookup_fails_on_second_task):
                 code, report = run_cli()
             self.assertEqual(code, 1)
             self.assertEqual(report["run"]["status"], "failed")
-            self.assertEqual(report["run"]["error"], "RuntimeError")
+            self.assertEqual(report["run"]["error"], type(crash).__name__)
             self.assertEqual([(d["task_id"], d["delivery_status"]) for d in report["decisions"]],
                              [("A", "sent")])
 

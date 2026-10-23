@@ -1,29 +1,33 @@
 """Small English keyword rules for offline classification and warehouse routing.
 
-Each clause of a note is judged on its own. Deliberately simple: richer or ambiguous
-notes are the LLM's job, not this fallback's.
+Each clause of a note is judged on its own. When in doubt the answer is "none", so the owner
+gets the reminder: richer or ambiguous notes are the LLM's job, not this fallback's.
 """
 
 import re
 
 
-ITEMS = r"materials?|parts|equipment|cable|conduit|shipment|deliver(?:y|ies)|backorder\w*|out of stock|shortage"
+ITEMS = (r"materials?|supplies|parts|equipment|cable|conduit|shipment|deliver(?:y|ies)|"
+         r"backorder\w*|out of stock|shortage")
 MATERIALS = re.compile(rf"\b({ITEMS}|warehouse|supplier|vendor)\b")
 MATERIAL_ITEMS = re.compile(rf"\b({ITEMS})\b")
-# Waiting on something: materials if the clause names materials, otherwise upstream work.
+# Waiting for, short of, or not received: a materials blocker when the clause names materials.
 WAITING = re.compile(
-    r"\b(await\w*|waiting|blocked by|dependent on|pending|backorder\w*|out of stock|"
-    r"(?:proceed|start) until|(?:not|never|nothing) (?:yet )?(?:delivered|shipped|received|arrived))\b"
+    r"\b(await\w*|waiting|pending|backorder\w*|out of stock|shortage|short on|missing|"
+    r"not available|unavailable|need\w*|delay\w*|ran out|run out|(?:proceed|start) until|"
+    r"no (?:materials?|supplies|parts|equipment|cable|conduit))\b"
+    r"|(?:\bnot|\bnever|\bnothing|n't) (?:yet )?(?:been )?(?:deliver|ship|receiv|arriv)\w*"
 )
-# Signals that count only next to a materials word ("short on conduit", "materials delayed").
-SHORTAGE = re.compile(r"\b(shortage|short on|missing|not available|unavailable|need\w*|delay\w*)\b")
+# Only an explicit dependency on other work goes past the owner to coordination.
+UPSTREAM = re.compile(r"\b(upstream|dependent on|depends on|blocked by|permit|(?:proceed|start) until)\b")
 # "No backorder", "not delayed", "no missing materials": a negated blocker is not a blocker.
 NEGATED = re.compile(
-    r"\b(?:no|not|nothing|never) (?:await\w*|waiting|blocked by|dependent on|pending|"
-    r"delay\w*|backorder\w*|out of stock)\b|\bno (?:\w+ )?(?:shortage|missing)\b"
+    r"\b(?:no|not|nothing|never) (?:await\w*|waiting|pending|delay\w*|backorder\w*|out of stock|"
+    r"blocked by|dependent on|upstream)\b|\bno (?:\w+ )?(?:shortage|missing)\b"
 )
 RESOLVED = re.compile(r"\b(resolved|received|arrived|delivered|completed|approved|cleared|no longer)\b")
 STILL_PENDING = re.compile(r"\b(no(?! longer)|not|never|nothing|until|yet)\b|n't")
+BARE_RESOLUTION = re.compile(r"\s*(?:(?:it|this|that) (?:is |was |has been )?)?(?:now |all )?(?:resolved|cleared)\s*")
 # "If a backorder occurs" or "could become a problem" is not a blocker yet; "if possible" is courtesy.
 HYPOTHETICAL = re.compile(r"\b(if(?! possible)|unless|in case|might|could become|may become)\b")
 FILLER = {"have", "been", "were", "with", "from", "that", "this", "today", "fully", "also"}
@@ -43,9 +47,9 @@ def blocker_kind(clause: str):
     """'materials', 'upstream', or None for one clause."""
     if is_resolved(clause):
         return None
-    if MATERIALS.search(clause) and (WAITING.search(clause) or SHORTAGE.search(clause)):
+    if MATERIALS.search(clause) and WAITING.search(clause):
         return "materials"
-    return "upstream" if WAITING.search(clause) else None
+    return "upstream" if UPSTREAM.search(clause) else None
 
 
 def active_blockers(notes: str):
@@ -58,14 +62,14 @@ def active_blockers(notes: str):
         kind = blocker_kind(clause)
         if kind:
             active.append((kind, clause))
-        elif is_resolved(clause) and active and not WAITING.search(clause):
-            # A later update closes the blocker it talks about.
+        elif is_resolved(clause) and active:
+            # A later update closes the blocker it talks about, and only that one.
             if MATERIAL_ITEMS.search(clause):  # "All materials have arrived."
                 active = [b for b in active if b[0] != "materials"]
-            elif subject(clause):  # "Permit completed." closes the permit wait, not others.
-                active = [b for b in active if not subject(clause) & subject(b[1])]
-            else:  # "..., now resolved." closes the blocker just mentioned.
+            elif BARE_RESOLUTION.fullmatch(clause):  # "..., now resolved."
                 active.pop()
+            else:  # "Permit completed." closes the permit wait; "PO approved" closes nothing.
+                active = [b for b in active if not subject(clause) & subject(b[1])]
     return active
 
 
@@ -78,5 +82,5 @@ def simple_interpretation(notes: str) -> str:
 
 
 def warehouse_dependency(notes: str) -> bool:
-    """Ask the warehouse only when an active materials clause names it."""
+    """Ask the warehouse only when an active materials clause names it; otherwise the owner."""
     return any(kind == "materials" and "warehouse" in clause for kind, clause in active_blockers(notes))

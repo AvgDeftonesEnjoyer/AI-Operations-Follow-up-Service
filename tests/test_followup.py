@@ -222,18 +222,20 @@ class RuleTests(unittest.TestCase):
                          "no_action")
 
     def test_placeholder_owner_is_treated_as_missing(self):
-        for owner in ["TBD", "unassigned", " N/A ", "-", "Not assigned"]:
+        for owner in ["TBD", "unassigned", " N/A ", "-", "Not assigned", "No owner",
+                      "Not yet assigned", "(unassigned)", "TBD - PM to assign"]:
             with self.subTest(owner=owner):
                 action = decide(task(assigned_to=owner), TODAY)
                 self.assertEqual((action.decision, action.target), ("clarify", "coordination_queue"))
 
     def test_overdue_escalates_only_after_the_owner_was_asked(self):
-        self.assertEqual(decide(task(due_date="2026-10-20"), TODAY).reason, "Overdue by 1 day")
+        self.assertEqual(decide(task(due_date="2026-10-20"), TODAY).reason, "Overdue since 2026-10-20")
         # Even a long-overdue task first gets a follow-up to its owner.
         self.assertEqual(decide(task(due_date="2026-09-01"), TODAY).decision, "follow_up_owner")
-        self.assertEqual(decide(task(), TODAY, owner_asked_on=date(2026, 10, 19)).decision,
+        quiet = task(last_update="2026-10-17")  # No update since the follow-up.
+        self.assertEqual(decide(quiet, TODAY, owner_asked_on=date(2026, 10, 19)).decision,
                          "follow_up_owner")
-        action = decide(task(), TODAY, owner_asked_on=date(2026, 10, 18))
+        action = decide(quiet, TODAY, owner_asked_on=date(2026, 10, 18))
         # Escalation goes beyond the owner, who already received the follow-up.
         self.assertEqual((action.decision, action.target), ("escalate", "coordination_queue"))
         self.assertIn("Sam", action.message)
@@ -288,7 +290,8 @@ class RuleTests(unittest.TestCase):
 
     def test_common_status_synonyms_are_normalized_and_others_are_not_guessed(self):
         for raw, status in [("Completed", "Done"), ("closed", "Done"), ("Finished", "Done"),
-                            ("In Progress", "Working on it"), ("On hold", "Unknown")]:
+                            ("In Progress", "Working on it"), ("In-Progress", "Working on it"),
+                            ("On hold", "Unknown")]:
             with self.subTest(raw=raw):
                 self.assertEqual(task(status=raw).status, status)
 

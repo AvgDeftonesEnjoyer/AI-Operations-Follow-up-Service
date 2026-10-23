@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import time
 from urllib import error, request
 
@@ -12,12 +13,13 @@ BLOCKER_TYPES = {"none", "materials", "upstream"}
 # Configuration errors (bad request, rejected key, unknown model) would fail every call:
 # stop the run instead of quietly running on the fallback.
 FATAL_REASONS = {"http_400", "http_401", "http_403", "http_404"}
-# The only reasons that may reach the audit log; anything else becomes provider_error.
+# The only reasons that may reach the audit log (plus http_<status>); anything else
+# becomes provider_error.
 FALLBACK_REASONS = {
     "provider_error", "provider_unavailable", "timeout", "network_error", "invalid_json",
     "invalid_schema", "response_too_large", "truncated_output", "refusal", "unexpected_stop",
     "unsupported_content",
-} | {f"http_{code}" for code in range(100, 600)}
+}
 
 
 class NoRedirects(request.HTTPRedirectHandler):
@@ -167,7 +169,8 @@ def interpret_safely(ai, notes: str) -> tuple[str, str | None]:
     except AIError as exc:  # Bad provider responses must not stop the batch; bad config must.
         if exc.reason in FATAL_REASONS:
             raise
-        reason = exc.reason if exc.reason in FALLBACK_REASONS else "provider_error"
+        allowed = exc.reason in FALLBACK_REASONS or re.fullmatch(r"http_\d{3}", str(exc.reason))
+        reason = exc.reason if allowed else "provider_error"
         return simple_interpretation(notes), reason
     except Exception:  # Unknown errors may carry secrets in their text, so log only a category.
         return simple_interpretation(notes), "provider_error"

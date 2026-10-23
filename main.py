@@ -68,7 +68,7 @@ def main():
                 decisions.append(decision)
             if any(row["delivery_status"] == "failed" for row in decisions):
                 run.update(status="failed", error="Delivery failure")
-        except Exception as exc:
+        except (Exception, KeyboardInterrupt) as exc:  # Ctrl+C still writes honest reports.
             # Only our own errors carry their text (record number, field name, HTTP status);
             # anything else is reported by type, so task data or credentials cannot leak.
             text = f": {exc}" if isinstance(exc, (ValueError, AIError)) else ""

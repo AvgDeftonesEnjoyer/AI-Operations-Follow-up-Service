@@ -104,12 +104,38 @@ class RegressionTests(unittest.TestCase):
                 result = self.run_service(ai, date(2026, 10, 24))[0]
                 self.assertEqual(result["decision"], "follow_up_owner")
 
+    def test_owner_update_after_a_follow_up_counts_as_an_answer(self):
+        ai = Mock(interpret=Mock(return_value="none"))
+        overdue = {**ROW, "due_date": "2026-10-10", "notes": ""}
+        self.fixture.write_text(json.dumps([overdue]))
+        self.run_service(ai)  # Follow-up on 10-21.
+        self.fixture.write_text(json.dumps([{**overdue, "notes": "80% spliced, finishing 10-25",
+                                             "last_update": "2026-10-23"}]))
+        replied = self.run_service(ai, date(2026, 10, 23))[0]
+        self.assertEqual(replied["decision"], "no_action")  # No "please share the status" again.
+        self.assertEqual(self.run_service(ai, date(2026, 10, 25))[0]["decision"], "no_action")
+        later = self.run_service(ai, date(2026, 10, 26))[0]  # Still overdue 3 days after the update.
+        self.assertEqual((later["decision"], later["delivery_status"]), ("escalate", "sent"))
+        self.assertEqual(len(self.store.deliveries()), 2)
+
+    def test_fallback_label_is_not_pinned_when_no_action_was_taken(self):
+        # On time and not blocked: the fallback label leads to no action, so nothing is pinned
+        # and the recovered model is asked again on the next run.
+        self.fixture.write_text(json.dumps([{**ROW, "due_date": "2026-10-30",
+                                             "notes": "Awaiting materials"}]))
+        ai = Mock(interpret=Mock(side_effect=[AIError("down", "timeout"), "none"]))
+        self.assertEqual(self.run_service(ai)[0]["decision"], "no_action")
+        self.run_service(ai)
+        self.assertEqual(ai.interpret.call_count, 2)
+
     def test_already_sent_reports_what_was_actually_delivered(self):
         ai = Mock(interpret=Mock(return_value="none"))
         self.run_service(ai)
-        again = self.run_service(ai, date(2026, 10, 22))  # Today's wording would say "2 days".
-        self.assertEqual((again[0]["delivery_status"], again[0]["reason"]),
-                         ("already_sent", "Overdue by 1 day"))
+        again = self.run_service(ai, date(2026, 10, 22))
+        # Messages carry no day counts, so a later run reports exactly the delivered text.
+        delivered = self.store.deliveries()[0]["action"]
+        self.assertEqual((again[0]["delivery_status"], again[0]["reason"], again[0]["message"]),
+                         ("already_sent", delivered["reason"], delivered["message"]))
 
     def test_bad_field_types_fail_before_any_delivery(self):
         for field in ROW:
@@ -156,8 +182,6 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(len(self.store.deliveries()), 1)
 
     def test_note_edge_cases_produce_safe_actions_and_no_duplicates(self):
-        from followup.ai import StubAI
-
         # The task is overdue: a missed blocker would become a generic owner reminder.
         # Mixed notes ("resolved, but still waiting") are left to the LLM, not this fallback.
         cases = [
@@ -185,6 +209,15 @@ class RegressionTests(unittest.TestCase):
             ("Vendor shipment delayed; warehouse not involved.", "request_eta", "Sam"),
             ("Warehouse delivered the cable; waiting for city permit.", "escalate", "coordination_queue"),
             ("Minor delay, will finish tomorrow.", "follow_up_owner", "Sam"),
+            # A bare "pending" or "waiting" is not a dependency: the owner is asked first.
+            ("Final QA pending, will finish Friday.", "follow_up_owner", "Sam"),
+            ("Waiting for good weather.", "follow_up_owner", "Sam"),
+            ("Haven't received materials from warehouse.", "request_eta", "warehouse"),
+            ("Did not receive conduit from the warehouse.", "request_eta", "warehouse"),
+            ("No materials on site.", "request_eta", "Sam"),
+            ("Supplies delayed.", "request_eta", "Sam"),
+            ("Ran out of conduit.", "request_eta", "Sam"),
+            ("Awaiting materials from warehouse; PO approved.", "request_eta", "warehouse"),
             ("Backorder resolved.", "follow_up_owner", "Sam"),
             ("No material shortage.", "follow_up_owner", "Sam"),
             ("No backorder, parts on site.", "follow_up_owner", "Sam"),

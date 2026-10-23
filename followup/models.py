@@ -20,8 +20,8 @@ STATUSES = {
     "not started": "Not Started",
 }
 # Placeholder text in the owner field means that nobody is assigned yet.
-NO_OWNER = {"tbd", "tba", "n/a", "na", "none", "null", "unassigned", "not assigned", "unknown",
-            "-", "?"}
+NO_OWNER = {"tbd", "tba", "n/a", "na", "none", "null", "unknown", "-", "?"}
+NO_OWNER_PHRASE = re.compile(r"\b(unassigned|no owner|not (?:yet )?assigned|tb[ad])\b")
 
 
 def clean(data, field):
@@ -75,14 +75,17 @@ class Task:
         if not task_id:
             raise ValueError("Task without task_id: refusing an unsafe send")
         due_raw = clean(data, "due_date")
-        status = (clean(data, "status") or "").casefold()
+        # "In-Progress", "in_progress" and "In Progress" are the same status.
+        status = re.sub(r"[-_\s]+", " ", (clean(data, "status") or "").casefold())
         owner = clean(data, "assigned_to")
+        if owner and (owner.casefold() in NO_OWNER or NO_OWNER_PHRASE.search(owner.casefold())):
+            owner = None
         updated = parse_date(clean(data, "last_update"))
         return cls(
             task_id=task_id.upper(),
             project=clean(data, "project") or "",
             title=clean(data, "task") or "Untitled task",
-            owner=None if owner and owner.casefold() in NO_OWNER else owner,
+            owner=owner,
             due_date=parse_date(due_raw),
             due_raw=due_raw,
             status=STATUSES.get(status, "Unknown"),

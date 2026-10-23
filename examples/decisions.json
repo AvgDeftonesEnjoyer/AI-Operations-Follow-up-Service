@@ -1,11 +1,11 @@
 {
   "as_of": "2026-10-21",
   "run": {
-    "id": "389380b657be4fbeb8583af9b023b5d8",
-    "started_at": "2026-10-23T16:42:03+00:00",
+    "id": "da024950d7914fed90cf5fab7481f095",
+    "started_at": "2026-10-23T16:59:17+00:00",
     "status": "completed",
     "error": null,
-    "finished_at": "2026-10-23T16:42:03+00:00",
+    "finished_at": "2026-10-23T16:59:17+00:00",
     "llm_usage": null,
     "llm_fallbacks": 0
   },
@@ -14,7 +14,7 @@
       "task_id": "TC-1001",
       "decision": "follow_up_owner",
       "target": "John Smith",
-      "reason": "Overdue by 3 days",
+      "reason": "Overdue since 2026-10-18",
       "message": "TC-1001 'Fiber splicing' (SURF Illinois) was due on 2026-10-18. Please share the status and an updated ETA.",
       "operation_id": "c70bcbb14ccad1343091ae72",
       "delivery_status": "sent"
@@ -59,7 +59,7 @@
       "task_id": "TC-1006",
       "decision": "follow_up_owner",
       "target": "Jamie Lee",
-      "reason": "Overdue by 1 day",
+      "reason": "Overdue since 2026-10-20",
       "message": "TC-1006 'Splice verification' (Minnesota Fiber) was due on 2026-10-20. Please share the status and an updated ETA.",
       "operation_id": "1d1b364ca7e1d269eb5e6111",
       "delivery_status": "sent"

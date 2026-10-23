@@ -119,37 +119,42 @@ class Service:
 
         return "failed"
 
+    def classify(self, task):
+        """Return (blocker label, whether it is a fallback label that is not stored yet)."""
+        # Missing fields and completed tasks never need a model request.
+        if task.status in {"Done", "Unknown"} or not (task.owner and task.due_date and task.notes):
+            return "none", False
+        state_id = task.fingerprint(None, None)
+        stored = self.store.get_classification(state_id)
+        if stored is not None:
+            return stored, False
+        label, fallback_reason = interpret_safely(self.ai, task.notes)
+        if fallback_reason is None:
+            # Pinned per task state: a model that answers differently next run changes nothing.
+            return self.store.save_classification(state_id, label), False
+        self.fallbacks += 1
+        self.store.log("llm_fallback", detail=f"Task {task.task_id}; reason={fallback_reason}")
+        return label, True
+
     def iter_results(self):
         """Yield each result as soon as it is final, so a later failure cannot erase it."""
         for task in self.fetch_tasks():
-            # Missing fields and completed tasks never need a model request.
-            blocker = "none"
-            if task.status not in {"Done", "Unknown"} and task.owner and task.due_date and task.notes:
-                state_id = task.fingerprint(None, None)
-                blocker = self.store.get_classification(state_id)
-                if blocker is None:
-                    blocker, fallback_reason = interpret_safely(self.ai, task.notes)
-                    blocker = self.store.save_classification(state_id, blocker)
-                    if fallback_reason is not None:
-                        self.fallbacks += 1
-                        self.store.log("llm_fallback",
-                                       detail=f"Task {task.task_id}; reason={fallback_reason}")
-
+            blocker, unstored_fallback = self.classify(task)
             asked_on = self.store.owner_asked_on(task.task_id, task.owner, task.due_raw)
             action = decide(task, self.today, blocker, asked_on)
             if action.decision == "no_action":
+                # Nothing rests on a fallback label here, so the model gets another try next run.
                 yield action.to_dict("not_needed")
                 continue
+            if unstored_fallback:
+                # An action rests on the fallback label: pin it, so a recovered model cannot
+                # turn the same task state into a second, different message.
+                self.store.save_classification(task.fingerprint(None, None), blocker)
 
             action = replace(
                 action, operation_id=task.fingerprint(action.decision, action.target)
             )
-            status = self.deliver(action, task.due_raw)
-            sent = self.delivery_api.lookup(action.operation_id) if status == "already_sent" else None
-            if sent:
-                # Report what the recipient actually got; today's wording can differ ("12 days").
-                action = replace(action, reason=sent["reason"], message=sent["message"])
-            yield action.to_dict(status)
+            yield action.to_dict(self.deliver(action, task.due_raw))
 
     def run(self):
         return list(self.iter_results())

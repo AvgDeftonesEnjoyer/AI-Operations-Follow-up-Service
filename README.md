@@ -90,20 +90,22 @@ Applied in priority order:
 | Situation | Decision | Target |
 | --- | --- | --- |
 | Task is `Done` | `no_action` | none |
-| Missing owner (or a placeholder such as `TBD`, `Unassigned`, `Not assigned`) | `clarify` | `coordination_queue` (a role, not an invented person) |
+| Missing owner (or a placeholder such as `TBD`, `Unassigned`, `Not yet assigned`, `No owner`) | `clarify` | `coordination_queue` (a role, not an invented person) |
 | Missing/invalid due date or unknown status | `clarify` | known owner |
 | Materials dependency, and the task is `Blocked` or overdue | `request_eta` | `warehouse` when the notes name it, otherwise the owner |
-| Waiting on upstream work, and the task is `Blocked` or overdue | `escalate` | `coordination_queue`; the message names the owner |
+| Dependency on other work, and the task is `Blocked` or overdue | `escalate` | `coordination_queue`; the message names the owner |
 | `Blocked` with no known cause | `clarify` | known owner (what is blocking it, and the ETA) |
-| Still overdue 3+ days after the owner's follow-up | `escalate` | `coordination_queue`; the message names the owner and the follow-up date |
+| Overdue, owner already asked, and no answer for 3+ days | `escalate` | `coordination_queue`; the message names the owner and when they were asked |
+| Overdue, owner already asked, and they updated the task since | `no_action` | none (until 3 days pass without progress) |
 | Overdue | `follow_up_owner` | known owner |
 | Otherwise (including a dependency on a task that is on time) | `no_action` | none |
 
-The owner is asked first, except for work waiting on another team, which the owner cannot unblock: even a long-overdue task gets a follow-up, and escalates only if it is still overdue three days after that follow-up to the same owner for the same deadline (a new owner or a moved deadline starts over). `ESCALATE_AFTER_DAYS` and `coordination_queue` are demo assumptions in `followup/rules.py`. Every message starts with the task ID, title, and project; reminders, ETA requests, and escalations also give the due date, so the recipient needs no other context. Missing or invalid dates are never guessed.
+The owner is asked first, except for work waiting on another team, which the owner cannot unblock: even a long-overdue task gets a follow-up. It escalates only if it is still overdue three days after that follow-up to the same owner for the same deadline — or three days after the owner's last update, which counts as their answer. A new owner or a moved deadline starts over. `ESCALATE_AFTER_DAYS` and `coordination_queue` are demo assumptions in `followup/rules.py`. Every message starts with the task ID, title, and project; reminders, ETA requests, and escalations also give the due date, so the recipient needs no other context. Messages contain no day counts, so the same task state always produces the same text. Missing or invalid dates are never guessed.
 
-A valid model classification is used as returned; without one, `followup/notes.py` judges each clause of the note (split at punctuation, `and`, `but`) with small English keyword lists:
+A valid model classification is used as returned; without one, `followup/notes.py` judges each clause of the note (split at punctuation, `and`, `but`) with small English keyword lists. When in doubt the answer is `none`, so the owner gets the reminder:
 
-- a waiting word (`awaiting`, `waiting`, `pending`, `backorder`, `out of stock`, `not yet delivered`…) or a shortage word (`shortage`, `short on`, `missing`, `delayed`, `need`…) next to a materials word (`materials`, `parts`, `cable`, `delivery`, `supplier`, `warehouse`…) means `materials`; a waiting word alone means `upstream`;
+- a waiting or shortage word (`awaiting`, `pending`, `backorder`, `short on`, `missing`, `delayed`, `ran out`, `haven't received`…) next to a materials word (`materials`, `supplies`, `parts`, `cable`, `delivery`, `supplier`, `warehouse`…) means `materials`;
+- only an explicit dependency (`upstream`, `permit`, `blocked by`, `dependent on`, `unable to proceed until`) means `upstream`; a bare "pending" or "waiting" does not, so "Final QA pending" goes to the owner, not past them;
 - negated (`no backorder`, `not delayed`) and hypothetical (`if a backorder occurs`, `could become a problem`) clauses do not count;
 - a resolution (`resolved`, `delivered`, `completed`…) does not count when the same clause says it has not happened yet (`not yet received`); a later update closes the blocker it talks about: "all materials have arrived" closes materials blockers, "permit completed" closes the permit wait, a bare "now resolved" closes the last one, and "safety training completed" closes nothing;
 - the warehouse is asked only when a still-active materials clause names it.
@@ -114,14 +116,14 @@ These are deliberately small rules, not a language parser; richer notes are the 
 
 - **Stable operation ID.** `Task.fingerprint()` hashes the normalized task state with the decision and target. The mock delivery server stores it as a unique SQLite key, so the same task/action/state is delivered once.
 - **Reconciliation.** The service looks the receipt up **before** sending and again after any timeout or error. When the server committed a delivery but the response was lost, the lookup finds it and no second send happens.
-- **Pinned classification.** The note label is stored per task state, so a model that answers differently on the next run cannot change the action and its operation ID. A fallback label is pinned too, until the task changes. Date rules are recomputed, so a reminder can later become an escalation.
-- **Honest reports.** An `already_sent` row shows the reason and message that were actually delivered, not today's wording.
+- **Pinned classification.** The model's label is stored per task state, so a model that answers differently on the next run cannot change the action and its operation ID. A fallback label is pinned only when an action rests on it; if it led to no action, the model gets another try next run. Date rules are recomputed, so a reminder can later become an escalation.
+- **Honest reports.** Messages have no day counts, so an `already_sent` row shows exactly the text that was delivered.
 - **Concurrency.** Receipts and labels use `INSERT OR IGNORE`; a worker that loses the race reports `already_sent`.
-- **Partial batches.** Each decision is reported as soon as it is final, so a mid-batch failure keeps finished results. A crash after a committed send is reported as `already_sent` on the next run.
+- **Partial batches.** Each decision is reported as soon as it is final, so a mid-batch failure — or Ctrl+C — keeps finished results in both reports. A crash after a committed send is reported as `already_sent` on the next run.
 
 ### Input validation
 
-All task fields must be strings or null, valid Unicode, at most 4,000 characters. Errors name the record and field (`Task #2: last_update must be a string or null`), never the value. Missing or duplicate task IDs abort ingestion **before any send**. Dates must be `YYYY-MM-DD`; invalid due dates trigger clarification. IDs are trimmed and uppercased. Statuses are case-insensitive, with common synonyms (`Completed`/`Closed`/`Finished` → `Done`, `In Progress` → `Working on it`); any other status asks the owner to clarify. Fixtures saved as UTF-8 (with or without a byte order mark), UTF-16, or UTF-32 are accepted. Fixture, database, and report paths must differ, so a report can never overwrite the delivery receipts.
+All task fields must be strings or null, valid Unicode, at most 4,000 characters. Errors name the record and field (`Task #2: last_update must be a string or null`), never the value. Missing or duplicate task IDs abort ingestion **before any send**. Dates must be `YYYY-MM-DD`; invalid due dates trigger clarification. IDs are trimmed and uppercased. Statuses are case-insensitive, with common synonyms (`Completed`/`Closed`/`Finished` → `Done`, `In Progress`/`In-Progress` → `Working on it`); any other status asks the owner to clarify. Fixtures saved as UTF-8 (with or without a byte order mark), UTF-16, or UTF-32 are accepted. Fixture, database, and report paths must differ, so a report can never overwrite the delivery receipts.
 
 ## Assumptions and trade-offs
 
