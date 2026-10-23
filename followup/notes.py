@@ -11,15 +11,14 @@ ITEMS = (r"materials?|supplies|parts|equipment|hardware|cable|fiber(?! splic)|co
          r"inventory|stock|shipment|shipping|(?<!work )order|deliver(?:y|ies)|back[- ]?order\w*|shortage")
 MATERIALS = re.compile(rf"\b({ITEMS}|warehouse|supplier|vendor)\b")
 MATERIAL_ITEMS = re.compile(rf"\b({ITEMS})\b")
+NOT_RECEIVED = re.compile(r"(?:\bnot|\bnever|\bnothing|n't) (?:yet )?(?:been )?(?:deliver|ship|receiv|arriv)\w*")
 # A blocker cue: waiting for, short of, or not received. What it waits for decides the kind.
 WAITING = re.compile(
     r"\b(await\w*|waiting|pending|blocked|held up|stuck|in transit|on order|dependent on|depends on|"
     r"back[- ]?order\w*|out of|shortage|short on|missing|not available|unavailable|delay\w*|late|ran out|"
     r"run out|(?:proceed|start) (?:until|unless)|(?:date|eta) (?:unknown|tbd)|unknown eta|no eta|"
-    r"no (?:materials?|supplies|parts|equipment|cable|conduit))\b"
-    r"|(?:\bnot|\bnever|\bnothing|n't) (?:yet )?(?:been )?(?:deliver|ship|receiv|arriv)\w*"
+    r"no (?:materials?|supplies|parts|equipment|cable|conduit))\b|" + NOT_RECEIVED.pattern
 )
-NOT_RECEIVED = re.compile(r"(?:\bnot|\bnever|\bnothing|n't) (?:yet )?(?:been )?(?:deliver|ship|receiv|arriv)\w*")
 # Only a wait on upstream work, a permit, or another task ("blocked by TC-1008": letters, a
 # dash, three or more digits; "Oct-25" is a date) goes past the owner to coordination.
 UPSTREAM = re.compile(r"\b(upstream|permit|(?!po-)[a-z]{2,5}-\d{3,})\b")  # PO-4471 is an order.
@@ -29,7 +28,9 @@ NEGATED = re.compile(
     r"blocked (?:by|on)|dependent on|upstream|late|missing)\b"
     r"|\bno (?:\w+ )?(?:shortage|missing|issues?|problems?|concerns?|needed|required)\b"
 )
-RESOLVED = re.compile(r"\b(resolved|received|arrived|delivered|completed|approved|cleared|no longer)\b")
+RESOLVED = re.compile(
+    r"\b(resolved|received|arrived|delivered|completed|approved|issued|fulfilled|filled|cleared|no longer)\b"
+)
 # "Not yet received", "until it is received", "awaiting approved materials": not done yet.
 STILL_PENDING = re.compile(r"\b(no(?! longer)|not|never|nothing|until|yet|await\w*|waiting|pending)\b|n't")
 # "..., now resolved", "they arrived today": the update refers to the blocker just mentioned.

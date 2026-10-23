@@ -22,6 +22,11 @@ def pause(attempt: int):
     time.sleep(min(0.1 * 2 ** (attempt - 1), 0.5) * random.uniform(0.5, 1))
 
 
+def describe(action):
+    """Who gets what, for audit lines that are readable on their own."""
+    return f"{action.task_id} {action.decision} -> {action.target}"
+
+
 def is_retryable(error):
     """A timeout or a 429/5xx may succeed later; other API errors will not."""
     return isinstance(error, AmbiguousTimeout) or error.retryable
@@ -65,13 +70,13 @@ class Service:
         key = action.operation_id
         # The provider kept failing earlier in this run: do not flood it; the next run resumes.
         if self.delivery_down:
-            self.store.log("send_deferred", key)
+            self.store.log("send_deferred", key, describe(action))
             return "deferred"
         try:
             return self._deliver(action)
         except (APIError, AmbiguousTimeout) as error:
             # An unavailable lookup is not evidence that nothing was sent: send nothing.
-            self.store.log("lookup_failed", key, type(error).__name__)
+            self.store.log("lookup_failed", key, f"{describe(action)}; {type(error).__name__}")
             if is_retryable(error):
                 self.delivery_down = True
             return "failed"
@@ -94,26 +99,26 @@ class Service:
 
         # Reconciliation first: a previous run may have timed out after sending.
         if self.lookup(key) is not None:
-            self.store.log("already_sent", key)
+            self.store.log("already_sent", key, describe(action))
             return "already_sent"
 
         for attempt in range(1, MAX_ATTEMPTS + 1):
             try:
                 created = self.delivery_api.send(key, body)
                 status = "sent" if created else "already_sent"
-                self.store.log(status, key)
+                self.store.log(status, key, describe(action))
                 return status
             except (APIError, AmbiguousTimeout) as error:
                 # Even a timeout is ambiguous: look up the stable operation ID.
                 if self.lookup(key) is not None:
-                    self.store.log("reconciled_after_timeout", key)
+                    self.store.log("reconciled_after_timeout", key, describe(action))
                     return "reconciled"
                 if not is_retryable(error) or attempt == MAX_ATTEMPTS:
-                    self.store.log("send_failed", key, str(error))
+                    self.store.log("send_failed", key, f"{describe(action)}; {error}")
                     if is_retryable(error):  # Temporary errors outlasted every retry.
                         self.delivery_down = True
                     return "failed"
-                self.store.log("send_retry", key, f"Attempt {attempt}: {error}")
+                self.store.log("send_retry", key, f"{describe(action)}; attempt {attempt}: {error}")
                 pause(attempt)
 
     def classify(self, task):
@@ -131,7 +136,7 @@ class Service:
         stored = self.store.get_classification(state_id)
         if stored is not None:
             return stored
-        label, fallback_reason = interpret_safely(self.ai, task.notes)
+        label, fallback_reason = interpret_safely(self.ai, task.notes_with_status)
         if fallback_reason is not None:
             self.fallbacks += 1
             self.store.log("llm_fallback", detail=f"Task {task.task_id}; reason={fallback_reason}")

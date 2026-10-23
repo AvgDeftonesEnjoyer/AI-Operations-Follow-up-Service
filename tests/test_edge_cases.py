@@ -221,6 +221,47 @@ class RegressionTests(unittest.TestCase):
         escalations = [d for d in self.store.deliveries() if d["action"]["decision"] == "escalate"]
         self.assertEqual(len(escalations), 1)
 
+    def test_a_blocked_status_counts_as_the_blocker_cue(self):
+        self.fixture.write_text(json.dumps([{**ROW, "status": "Blocked", "due_date": "2026-11-30",
+                                             "notes": "Need materials from warehouse"}]))
+        result = self.run_service(StubAI())[0]
+        self.assertEqual((result["decision"], result["target"]), ("request_eta", "warehouse"))
+
+    def test_an_unknown_status_after_a_chase_does_not_stop_escalation(self):
+        task = {**ROW, "due_date": "2026-10-10", "notes": ""}
+        self.fixture.write_text(json.dumps([task]))
+        self.run_service(Mock())  # Follow-up on 10-21.
+        self.fixture.write_text(json.dumps([{**task, "status": "On Hold"}]))
+        self.assertEqual(self.run_service(Mock(), date(2026, 10, 25))[0]["decision"], "escalate")
+
+    def test_assign_an_owner_is_asked_once_even_when_a_deadline_appears(self):
+        task = {**ROW, "assigned_to": None, "due_date": None}
+        self.fixture.write_text(json.dumps([task]))
+        self.run_service(Mock())
+        self.fixture.write_text(json.dumps([{**task, "due_date": "2026-11-30"}]))
+        self.assertEqual(self.run_service(Mock(), date(2026, 10, 22))[0]["delivery_status"], "already_sent")
+
+    def test_one_escalation_per_deadline_whatever_its_cause(self):
+        task = {**ROW, "due_date": "2026-10-10", "notes": "Waiting on TC-1002"}
+        upstream = Mock(interpret=Mock(return_value="upstream"))
+        self.fixture.write_text(json.dumps([task]))
+        self.run_service(upstream)  # Escalated for the upstream wait on 10-21.
+        self.fixture.write_text(json.dumps([{**task, "assigned_to": "Bob"}]))
+        self.assertEqual(self.run_service(upstream, date(2026, 10, 22))[0]["delivery_status"], "already_sent")
+
+    def test_audit_lines_name_the_task(self):
+        self.run_service(Mock())
+        sent = next(e for e in self.store.events() if e["event"] == "sent")
+        self.assertIn("A follow_up_owner -> Sam", sent["detail"])
+
+    def test_broken_model_demo_falls_back_safely_from_the_cli(self):
+        self.fixture.write_text(json.dumps([{**ROW, "notes": "Awaiting materials"}]))
+        result = self.cli("--llm", "broken")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("used the offline fallback", result.stdout)
+        decisions = json.loads((self.root / "decisions.json").read_text())
+        self.assertEqual(decisions["decisions"][0]["decision"], "request_eta")
+
     def test_editing_a_message_template_does_not_resend(self):
         self.fixture.write_text(json.dumps([ROW]))
         self.run_service(Mock())
@@ -420,6 +461,8 @@ class RegressionTests(unittest.TestCase):
             ("Can't proceed unless materials arrive.", "request_eta", "Sam"),
             ("Waiting on materials. Update: received.", "follow_up_owner", "Sam"),
             ("Waiting on PO-4471 approval.", "follow_up_owner", "Sam"),
+            ("Waiting on permit from city. Permit issued 10/20.", "follow_up_owner", "Sam"),
+            ("Warehouse backorder fulfilled; crew installing.", "follow_up_owner", "Sam"),
             ("Permit received, but still waiting on conduit delivery from warehouse.", "request_eta", "warehouse"),
             ("Vendor shipment delayed; warehouse not involved.", "request_eta", "Sam"),
             ("Warehouse delivered the cable; waiting for city permit.", "escalate", "coordination_queue"),

@@ -32,18 +32,12 @@ def decide(task: Task, today: date, blocker: str = "none",
         if not task.due_date:
             message += " Please also confirm its due date."
             reason = "Missing owner and invalid due date" if task.due_raw else "Missing owner and due date"
-        return Action(task.task_id, "clarify", COORDINATION_QUEUE, reason, message,
-                      key=f"no owner; due known: {bool(task.due_date)}")
+        return Action(task.task_id, "clarify", COORDINATION_QUEUE, reason, message, key="no owner")
 
     if not task.due_date:
         issue = "Invalid due date" if task.due_raw else "Missing due date"
         return Action(task.task_id, "clarify", task.owner, issue,
                       f"{task.heading} has no valid due date. Please confirm it.", key="no due date")
-
-    if task.status == "Unknown":
-        return Action(task.task_id, "clarify", task.owner, "Unrecognized task status",
-                      f"{task.heading} has an unrecognized status. Please confirm its current status.",
-                      key="unknown status")
 
     due = task.due_date.isoformat()
     overdue = today > task.due_date
@@ -61,12 +55,17 @@ def decide(task: Task, today: date, blocker: str = "none",
             task.task_id, "escalate", COORDINATION_QUEUE, f"Overdue since {due}; chased on {chased}",
             f"{task.heading} has been overdue since {due} (owner: {task.owner}) and was first "
             f"chased on {chased}. Please agree a recovery plan and ETA with the owner.",
-            key=f"overdue since {due}",  # One age escalation per deadline, whoever the owner is.
+            key=f"escalated; due {due}",  # One escalation per deadline, whatever its cause.
         )
+
+    if task.status == "Unknown":
+        return Action(task.task_id, "clarify", task.owner, "Unrecognized task status",
+                      f"{task.heading} has an unrecognized status. Please confirm its current status.",
+                      key="unknown status")
 
     if blocker == "materials" and needs_attention(task, today):
         # The warehouse is asked only when the notes name it; otherwise the owner chases the ETA.
-        target = "warehouse" if warehouse_dependency(task.notes) else task.owner
+        target = "warehouse" if warehouse_dependency(task.notes_with_status) else task.owner
         return Action(
             task.task_id, "request_eta", target, "Materials dependency",
             f"{task.heading} is waiting for materials ({when}). Please confirm the delivery ETA.",
@@ -79,7 +78,7 @@ def decide(task: Task, today: date, blocker: str = "none",
             task.task_id, "escalate", COORDINATION_QUEUE, "Upstream dependency",
             f"{task.heading} is blocked (owner: {task.owner}, due {due}). "
             "Please help unblock it and agree an ETA with the owner.",
-            key=f"upstream; owner {task.owner}; due {due}",
+            key=f"escalated; due {due}",
         )
 
     if task.status == "Blocked":

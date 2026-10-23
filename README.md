@@ -24,7 +24,7 @@ The command reads `tasks.json` with the assessment date **2026-10-21 (UTC)** and
 - `.data/delivery_log.json` — deliveries recorded by the mock server plus timestamped audit events.
 - `.data/followups.sqlite` — durable state, so later runs do not send duplicates.
 
-Audit events also stream to stderr as they happen (`INFO` for sends, `WARNING` for retries, fallbacks, and failures); the summary goes to stdout.
+Audit events also stream to stderr as they happen (`INFO` for sends, `WARNING` for retries, fallbacks, and failures), each naming the task, action, and recipient; the summary goes to stdout.
 
 Run the **same command again**: the first run sends 7 mock actions, the second sends 0. Three tasks need no action. Sample outputs are in `examples/` (`decisions.json`, `delivery_log.json`, and `failure_demo_log.json` from the failure demo below).
 
@@ -72,6 +72,8 @@ python main.py --llm claude --db .data/claude_demo.sqlite
 
 Only notes are sent to Anthropic, but notes can contain sensitive information: `--llm claude` is an explicit external-data boundary. The tests mock the network and need no key. The app does not load `.env`; `.env.example` only lists the variable names.
 
+To see the safe fallback without a key, `python main.py --llm broken --db .data/broken_demo.sqlite` uses a demo model that always answers outside the schema: every note falls back to the keyword rules, each fallback is logged, the run report counts them, and the actions stay the same.
+
 ## How to read the code
 
 1. `main.py` — CLI options, run report, exit codes.
@@ -101,7 +103,7 @@ Applied in priority order:
 | Overdue | `follow_up_owner` | known owner |
 | Otherwise (including a dependency on a task that is on time) | `no_action` | none |
 
-**The owner first, then coordination.** An overdue task is chased once after its deadline — by a follow-up or an ETA request to the owner, or an ETA request to the warehouse. Requests say "overdue since" once the deadline has passed, so a request sent while the task was on time is repeated then, and the clock starts from it. If the task is still overdue three days later, coordination is asked to agree a recovery plan, whatever the notes say by then: an owner's note ("finishing Friday"), a materials label (even one produced by a tricked model), notes that route everything to the warehouse, marking the task Blocked, or touching the record does not stop it. Clarifications about missing facts do not start the clock. A new owner gets their own follow-up and a moved deadline its own clock; an ETA request to the warehouse counts whoever the owner is, and going back to an earlier owner or deadline reuses its history. There is one age escalation per deadline. Work waiting on another team goes to coordination straight away, because the owner cannot unblock it — once; it is not escalated a second time when the three days pass. `ESCALATE_AFTER_DAYS` and `coordination_queue` are demo assumptions in `followup/rules.py`.
+**The owner first, then coordination.** An overdue task is chased once after its deadline — by a follow-up or an ETA request to the owner, or an ETA request to the warehouse. Requests say "overdue since" once the deadline has passed, so a request sent while the task was on time is repeated then, and the clock starts from it. If the task is still overdue three days later, coordination is asked to agree a recovery plan, whatever the notes say by then: an owner's note ("finishing Friday"), a materials label (even one produced by a tricked model), notes that route everything to the warehouse, marking the task Blocked, an unrecognized status, or touching the record does not stop it. Clarifications about missing facts do not start the clock. A new owner gets their own follow-up and a moved deadline its own clock; an ETA request to the warehouse counts whoever the owner is, and going back to an earlier owner or deadline reuses its history. There is one escalation per deadline, whatever its cause (upstream wait or age). Work waiting on another team goes to coordination straight away, because the owner cannot unblock it — once; it is not escalated a second time when the three days pass. `ESCALATE_AFTER_DAYS` and `coordination_queue` are demo assumptions in `followup/rules.py`.
 
 **Messages.** Each starts with the task ID, title, and project; reminders, ETA requests, and escalations also give the due date, so the recipient needs no other context. Messages contain no day counts. Missing or invalid dates are never guessed.
 
@@ -110,7 +112,8 @@ A valid model classification is used as returned; without one, `followup/notes.p
 - a blocker word (`awaiting`, `pending`, `blocked`, `held up`, `stuck`, `in transit`, `on order`, `backorder`/`back-ordered`, `short on`, `missing`, `delayed`, `late`, `ran out`, `ETA unknown`, `haven't received`…) next to a materials word (`materials`, `supplies`, `parts`, `hardware`, `cable`, `conduit`, `handholes`, `inventory`, `shipping`, `delivery`, `supplier`, `warehouse`…) means `materials` — so the spec's "blocked by materials" asks for an ETA; a bare "not received yet" refers to the item named just before it;
 - a blocker word next to `upstream`, `permit`, or another task's ID (letters, a dash, three or more digits, like `TC-1008`) means `upstream` ("unable to proceed until upstream splice confirmed", "waiting on city permit", "blocked by TC-1008"); anything else — a bare "pending", "blocked by weather", or "permit issued" with no wait — goes to the owner, not past them;
 - negated (`no backorder`, `not delayed`, `no longer waiting`, `no materials issues`, `no parts required`) and hypothetical (`if a backorder occurs`, `could become a problem`) clauses do not count;
-- a resolution (`resolved`, `delivered`, `completed`…) does not count when the same clause says it has not happened yet (`not yet received`); a later update closes the blocker it talks about: "all materials have arrived" closes materials blockers, "permit completed" closes the permit wait, a bare "now resolved" closes the last one, and "safety training completed" closes nothing;
+- a `Blocked` status counts as the blocker word, so a Blocked task whose note says "Materials" asks for an ETA;
+- a resolution (`resolved`, `delivered`, `completed`, `issued`, `fulfilled`…) does not count when the same clause says it has not happened yet (`not yet received`); a later update closes the blocker it talks about: "all materials have arrived" closes materials blockers, "permit completed" closes the permit wait, a bare "now resolved" closes the last one, and "safety training completed" closes nothing;
 - the warehouse is asked only when a still-active materials clause names it.
 
 These are deliberately small rules, not a language parser; richer notes are the LLM's job.

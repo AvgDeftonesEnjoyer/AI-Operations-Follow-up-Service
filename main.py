@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 from uuid import uuid4
 
-from followup.ai import AIError, ClaudeInterpreter, StubAI
+from followup.ai import AIError, BrokenAI, ClaudeInterpreter, StubAI
 from followup.api import APIError, DeliveryAPI, TaskAPI
 from followup.service import Service
 from followup.store import Store, now_utc
@@ -32,7 +32,8 @@ def main():
     parser.add_argument("--decisions-out", default=".data/decisions.json")
     parser.add_argument("--delivery-log-out", default=".data/delivery_log.json")
     parser.add_argument("--as-of", default="2026-10-21", help="UTC evaluation date (YYYY-MM-DD)")
-    parser.add_argument("--llm", choices=["stub", "claude"], default="stub")
+    parser.add_argument("--llm", choices=["stub", "claude", "broken"], default="stub",
+                        help="broken: a demo model that always returns invalid output")
     parser.add_argument("--read-failures", default="", help="E.g. 429,503")
     parser.add_argument("--send-failures", default="", help="E.g. 503,429")
     parser.add_argument("--timeout-after-commit-once", action="store_true")
@@ -62,7 +63,7 @@ def main():
         try:
             reader = TaskAPI(args.fixture, read_failures)
             sender = DeliveryAPI(store, send_failures, args.timeout_after_commit_once)
-            ai = ClaudeInterpreter() if args.llm == "claude" else StubAI()
+            ai = {"claude": ClaudeInterpreter, "broken": BrokenAI}.get(args.llm, StubAI)()
             service = Service(reader, sender, store, ai, today)
             for decision in service.iter_results():
                 decisions.append(decision)

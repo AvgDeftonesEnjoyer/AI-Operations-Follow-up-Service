@@ -55,6 +55,13 @@ class StubAI:
         return simple_interpretation(notes)
 
 
+class BrokenAI:
+    """Demo model that always answers outside the schema (--llm broken): shows the safe fallback."""
+
+    def interpret(self, notes: str) -> str:
+        return "mark_all_tasks_done"
+
+
 class ClaudeInterpreter:
     """Minimal Claude Messages API client; no extra Python packages needed."""
 

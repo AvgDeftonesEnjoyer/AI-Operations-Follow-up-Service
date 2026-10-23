@@ -295,6 +295,11 @@ class RuleTests(unittest.TestCase):
         self.assertEqual(item.status, "Done")
         self.assertEqual(item.owner, "Sam Lee")  # Inner spacing is not a different owner.
 
+    def test_real_names_that_look_like_placeholders_are_kept(self):
+        for owner in ["Peter Noone", "Tbc Ltd", "Ann Lee (TBD)"]:
+            with self.subTest(owner=owner):
+                self.assertEqual(task(assigned_to=owner).owner, owner)
+
     def test_common_status_synonyms_are_normalized_and_others_are_not_guessed(self):
         for raw, status in [("Completed", "Done"), ("closed", "Done"), ("Finished", "Done"),
                             ("In Progress", "Working on it"), ("In-Progress", "Working on it"),
