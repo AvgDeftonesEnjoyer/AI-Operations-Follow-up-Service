@@ -249,6 +249,37 @@ class RegressionTests(unittest.TestCase):
         self.fixture.write_text(json.dumps([{**task, "assigned_to": "Bob"}]))
         self.assertEqual(self.run_service(upstream, date(2026, 10, 22))[0]["delivery_status"], "already_sent")
 
+    def test_an_escalation_while_on_time_is_repeated_once_overdue(self):
+        upstream = Mock(interpret=Mock(return_value="upstream"))
+        self.fixture.write_text(json.dumps([{**ROW, "status": "Blocked", "due_date": "2026-10-25",
+                                             "notes": "Waiting on TC-1008"}]))
+        self.run_service(upstream)  # 10-21: escalated while on time.
+        overdue = self.run_service(upstream, date(2026, 10, 26))[0]
+        self.assertEqual((overdue["decision"], overdue["delivery_status"]), ("escalate", "sent"))
+        later = self.run_service(upstream, date(2026, 11, 20))[0]
+        self.assertEqual(later["delivery_status"], "already_sent")
+
+    def test_already_sent_shows_the_delivered_text_when_today_would_word_it_differently(self):
+        self.fixture.write_text(json.dumps([{**ROW, "assigned_to": None, "due_date": "2026-10-30"}]))
+        self.run_service(Mock())  # "has no owner. Please assign one."
+        self.fixture.write_text(json.dumps([{**ROW, "assigned_to": None, "due_date": None}]))
+        again = self.run_service(Mock(), date(2026, 10, 22))[0]
+        self.assertEqual(again["delivery_status"], "already_sent")
+        self.assertEqual(again["message"], self.store.deliveries()[0]["action"]["message"])
+
+    def test_each_fixture_gets_its_own_default_database(self):
+        result = subprocess.run([sys.executable, str(ROOT / "main.py"), "--fixture", str(self.fixture),
+                                 "--decisions-out", str(self.root / "d.json"),
+                                 "--delivery-log-out", str(self.root / "l.json")],
+                                cwd=self.root, capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.root / ".data" / "tasks.sqlite").exists())
+
+    def test_a_missing_fixture_names_its_path(self):
+        result = self.cli("--fixture", str(self.root / "nope.json"))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("nope.json", json.loads((self.root / "decisions.json").read_text())["run"]["error"])
+
     def test_audit_lines_name_the_task(self):
         self.run_service(Mock())
         sent = next(e for e in self.store.events() if e["event"] == "sent")
@@ -375,6 +406,8 @@ class RegressionTests(unittest.TestCase):
     def test_dates_are_strict_and_last_update_is_normalized(self):
         for value in ["20261020", "2026-W43-2", "2026-02-30", "2026-10-18Tnoon"]:
             self.assertIsNone(Task.from_dict({**ROW, "due_date": value}).due_date)
+        self.assertEqual(Task.from_dict({**ROW, "due_date": "2026-10-20T23:00:00-05:00"}).due_date,
+                         date(2026, 10, 21))  # Taken in UTC, like the evaluation date.
         for value in ["2026-10-18T00:00:00Z", "2026-10-18T09:30:00+03:00", "2026-10-18 09:00"]:
             self.assertEqual(Task.from_dict({**ROW, "due_date": value}).due_date, date(2026, 10, 18))
         self.assertIsNone(Task.from_dict({**ROW, "last_update": "invalid"}).last_update)

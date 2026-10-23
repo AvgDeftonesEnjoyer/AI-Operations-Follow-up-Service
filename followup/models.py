@@ -1,7 +1,7 @@
 """Small data objects and input normalization."""
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timezone
 import hashlib
 import json
 import re
@@ -55,12 +55,13 @@ def clean(data, field):
 
 
 def parse_date(value):
-    """YYYY-MM-DD, or an ISO timestamp whose date part is used. Invalid dates stay unknown."""
+    """YYYY-MM-DD, or an ISO timestamp (taken in UTC when it has an offset). Invalid stays unknown."""
     pattern = r"\d{4}-\d{2}-\d{2}(?:[T ][\d:.]+(?:Z|[+-]\d{2}:?\d{2})?)?"
     try:
         if not isinstance(value, str) or not re.fullmatch(pattern, value):
             return None
-        return date.fromisoformat(value[:10])
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return (moment.astimezone(timezone.utc) if moment.tzinfo else moment).date()
     except ValueError:
         return None
 

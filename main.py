@@ -28,7 +28,7 @@ def write_json(filename, content):
 def main():
     parser = argparse.ArgumentParser(description="Safe AI task follow-up demo")
     parser.add_argument("--fixture", default="tasks.json")
-    parser.add_argument("--db", default=".data/followups.sqlite")
+    parser.add_argument("--db", help="default: .data/<fixture name>.sqlite, so each fixture keeps its own state")
     parser.add_argument("--decisions-out", default=".data/decisions.json")
     parser.add_argument("--delivery-log-out", default=".data/delivery_log.json")
     parser.add_argument("--as-of", default="2026-10-21", help="UTC evaluation date (YYYY-MM-DD)")
@@ -38,6 +38,7 @@ def main():
     parser.add_argument("--send-failures", default="", help="E.g. 503,429")
     parser.add_argument("--timeout-after-commit-once", action="store_true")
     args = parser.parse_args()
+    args.db = args.db or f".data/{Path(args.fixture).stem}.sqlite"
 
     # A report written over the database would erase delivery receipts and allow duplicates.
     paths = [Path(value).resolve() for value in
@@ -73,6 +74,8 @@ def main():
             # Only our own errors carry their text (record number, field name, HTTP status);
             # anything else is reported by type, so task data or credentials cannot leak.
             text = f": {exc}" if isinstance(exc, (ValueError, APIError, AIError)) else ""
+            if isinstance(exc, FileNotFoundError):
+                text = f": {exc.filename}"  # The path the user gave, nothing else.
             run.update(status="failed", error=type(exc).__name__ + text)
         run["finished_at"] = now_utc()
         run["llm_usage"] = getattr(ai, "usage", None)

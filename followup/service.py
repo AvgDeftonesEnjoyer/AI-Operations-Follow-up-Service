@@ -41,6 +41,7 @@ class Service:
         self.today = today
         self.fallbacks = 0  # Notes the LLM could not classify in this run.
         self.delivery_down = False  # Set when retries run out on a temporary delivery error.
+        self.last_receipt = None  # The stored delivery found by the latest already_sent lookup.
 
     def fetch_tasks(self):
         for attempt in range(1, MAX_ATTEMPTS + 1):
@@ -98,8 +99,10 @@ class Service:
                 if k != "delivery_status"}
 
         # Reconciliation first: a previous run may have timed out after sending.
-        if self.lookup(key) is not None:
+        receipt = self.lookup(key)
+        if receipt is not None:
             self.store.log("already_sent", key, describe(action))
+            self.last_receipt = receipt
             return "already_sent"
 
         for attempt in range(1, MAX_ATTEMPTS + 1):
@@ -152,7 +155,12 @@ class Service:
                 continue
 
             action = replace(action, operation_id=task.operation_id(action))
+            self.last_receipt = None
             status = self.deliver(action)
+            if status == "already_sent" and self.last_receipt:
+                # Report what was delivered, not today's wording of the same request.
+                action = replace(action, reason=self.last_receipt.get("reason", action.reason),
+                                 message=self.last_receipt.get("message", action.message))
             if status in {"sent", "reconciled", "already_sent"}:
                 # Our own record of what was delivered: escalation timing must not depend on
                 # what a real provider keeps.

@@ -1,11 +1,11 @@
 {
   "as_of": "2026-10-21",
   "run": {
-    "id": "0d5f1d46a6e0413face56bef2a81eaf7",
-    "started_at": "2026-10-23T19:34:28+00:00",
+    "id": "85a7eb3b71914082ae0a1ea24173a149",
+    "started_at": "2026-10-23T20:33:45+00:00",
     "status": "completed",
     "error": null,
-    "finished_at": "2026-10-23T19:34:28+00:00",
+    "finished_at": "2026-10-23T20:33:45+00:00",
     "llm_usage": null,
     "llm_fallbacks": 0
   },
@@ -79,7 +79,7 @@
       "target": "coordination_queue",
       "reason": "Upstream dependency",
       "message": "TC-1008 'Test fiber signal' (SURF Illinois) is blocked (owner: Chris Patel, due 2026-10-15). Please help unblock it and agree an ETA with the owner.",
-      "operation_id": "e5f2c856411a444d3826e005",
+      "operation_id": "d6e9009c15f95bbc2db9ac1b",
       "delivery_status": "sent"
     },
     {

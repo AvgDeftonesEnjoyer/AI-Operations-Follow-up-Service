@@ -55,7 +55,7 @@ def decide(task: Task, today: date, blocker: str = "none",
             task.task_id, "escalate", COORDINATION_QUEUE, f"Overdue since {due}; chased on {chased}",
             f"{task.heading} has been overdue since {due} (owner: {task.owner}) and was first "
             f"chased on {chased}. Please agree a recovery plan and ETA with the owner.",
-            key=f"escalated; due {due}",  # One escalation per deadline, whatever its cause.
+            key=f"escalated; overdue since {due}",  # One escalation after the deadline, whatever its cause.
         )
 
     if task.status == "Unknown":
@@ -78,7 +78,7 @@ def decide(task: Task, today: date, blocker: str = "none",
             task.task_id, "escalate", COORDINATION_QUEUE, "Upstream dependency",
             f"{task.heading} is blocked (owner: {task.owner}, due {due}). "
             "Please help unblock it and agree an ETA with the owner.",
-            key=f"escalated; due {due}",
+            key=f"escalated; {when}",  # An escalation while on time is repeated once overdue.
         )
 
     if task.status == "Blocked":

@@ -22,7 +22,7 @@ The command reads `tasks.json` with the assessment date **2026-10-21 (UTC)** and
 
 - `.data/decisions.json` — one decision per task (`decision`, `target`, `reason`, `message`, `operation_id`, `delivery_status`).
 - `.data/delivery_log.json` — deliveries recorded by the mock server plus timestamped audit events.
-- `.data/followups.sqlite` — durable state, so later runs do not send duplicates.
+- `.data/tasks.sqlite` — durable state, so later runs do not send duplicates. Each fixture gets its own database by default (`.data/<fixture name>.sqlite`), so an unseen fixture that reuses task IDs is never mistaken for already-handled work.
 
 Audit events also stream to stderr as they happen (`INFO` for sends, `WARNING` for retries, fallbacks, and failures), each naming the task, action, and recipient; the summary goes to stdout.
 
@@ -31,7 +31,7 @@ Run the **same command again**: the first run sends 7 mock actions, the second s
 Unseen fixture with a separate database:
 
 ```bash
-python main.py --fixture path/to/other_tasks.json --db .data/other.sqlite
+python main.py --fixture path/to/other_tasks.json   # state goes to .data/other_tasks.sqlite
 ```
 
 Exit codes: `0` success, `1` when the run fails or any delivery fails (both reports are still written), `2` for invalid arguments. Run again with the same database to retry failed actions without duplicating successful ones.
@@ -95,15 +95,16 @@ Applied in priority order:
 | --- | --- | --- |
 | Task is `Done` | `no_action` | none |
 | Missing owner (or a placeholder such as `TBD`, `Unassigned`, `PM to assign`, `Pending`, `Vacant`) | `clarify` | `coordination_queue` (a role, not an invented person) |
-| Missing/invalid due date or unknown status | `clarify` | known owner |
+| Missing/invalid due date | `clarify` | known owner |
 | Overdue, and the task was chased 3+ days ago | `escalate` | `coordination_queue`; the message names the owner and when the task was chased |
+| Unknown status | `clarify` | known owner |
 | Materials dependency, and the task is `Blocked` or overdue | `request_eta` | `warehouse` when the notes name it, otherwise the owner |
 | Dependency on other work, and the task is `Blocked` or overdue | `escalate` | `coordination_queue`; the message names the owner |
 | `Blocked` with no known cause | `follow_up_owner` | known owner: what is blocking it, and the ETA |
 | Overdue | `follow_up_owner` | known owner |
 | Otherwise (including a dependency on a task that is on time) | `no_action` | none |
 
-**The owner first, then coordination.** An overdue task is chased once after its deadline — by a follow-up or an ETA request to the owner, or an ETA request to the warehouse. Requests say "overdue since" once the deadline has passed, so a request sent while the task was on time is repeated then, and the clock starts from it. If the task is still overdue three days later, coordination is asked to agree a recovery plan, whatever the notes say by then: an owner's note ("finishing Friday"), a materials label (even one produced by a tricked model), notes that route everything to the warehouse, marking the task Blocked, an unrecognized status, or touching the record does not stop it. Clarifications about missing facts do not start the clock. A new owner gets their own follow-up and a moved deadline its own clock; an ETA request to the warehouse counts whoever the owner is, and going back to an earlier owner or deadline reuses its history. There is one escalation per deadline, whatever its cause (upstream wait or age). Work waiting on another team goes to coordination straight away, because the owner cannot unblock it — once; it is not escalated a second time when the three days pass. `ESCALATE_AFTER_DAYS` and `coordination_queue` are demo assumptions in `followup/rules.py`.
+**The owner first, then coordination.** An overdue task is chased once after its deadline — by a follow-up or an ETA request to the owner, or an ETA request to the warehouse. Requests say "overdue since" once the deadline has passed, so a request sent while the task was on time is repeated then, and the clock starts from it. If the task is still overdue three days later, coordination is asked to agree a recovery plan, whatever the notes say by then: an owner's note ("finishing Friday"), a materials label (even one produced by a tricked model), notes that route everything to the warehouse, marking the task Blocked, an unrecognized status, or touching the record does not stop it. Clarifications about missing facts do not start the clock. A new owner gets their own follow-up and a moved deadline its own clock; an ETA request to the warehouse counts whoever the owner is, and going back to an earlier owner or deadline reuses its history. An escalation sent while the task was still on time (an upstream wait) is repeated once when it becomes overdue; after the deadline there is one escalation, whatever its cause. Work waiting on another team goes to coordination straight away, because the owner cannot unblock it — once; it is not escalated a second time when the three days pass. `ESCALATE_AFTER_DAYS` and `coordination_queue` are demo assumptions in `followup/rules.py`.
 
 **Messages.** Each starts with the task ID, title, and project; reminders, ETA requests, and escalations also give the due date, so the recipient needs no other context. Messages contain no day counts. Missing or invalid dates are never guessed.
 
@@ -124,13 +125,13 @@ These are deliberately small rules, not a language parser; richer notes are the 
 - **Own action record.** After a confirmed delivery the service writes its own `actions` row; escalation timing reads that, not the provider's storage, so swapping in a real provider keeps escalation working.
 - **Reconciliation.** The service looks the receipt up **before** sending and again after any timeout or error. When the server committed a delivery but the response was lost, the lookup finds it and no second send happens.
 - **Pinned classification.** The label is stored per note text the first time it is decided — from the model or, if the model failed, from the keyword fallback — and the first worker to store it wins. So the same notes never lead to two different messages, even when the model recovers later; the fallback is logged and counted in the run report, and edited notes are classified afresh. The model is asked only for `Blocked` or overdue tasks, where its label leads to an action. Labels stay with an existing database, so compare interpreters (`stub` versus `claude`) on separate databases. Date rules are recomputed, so a reminder can later become an escalation.
-- **Honest reports.** An `already_sent` row is the same request that was delivered; its wording is today's, so it differs only if a template, the task's name, or the letter case of the owner's name changed since.
+- **Honest reports.** An `already_sent` row shows the reason and message that were actually delivered, read back from the stored receipt, even if today's wording of the same request would differ.
 - **Concurrency.** Receipts and labels use `INSERT OR IGNORE`: the first stored label wins for every worker, so one note never leads to two different messages, and a worker that loses a delivery race reports `already_sent`.
 - **Partial batches.** Each decision is reported as soon as it is final, so a mid-batch failure — or Ctrl+C — keeps finished results in both reports. A crash after a committed send is reported as `already_sent` on the next run.
 
 ### Input validation
 
-All task fields must be strings, numbers (`"task_id": 1002` becomes `"1002"`), or null; valid Unicode; at most 4,000 characters. Inner whitespace is collapsed, so `John  Smith` and `John Smith` are the same owner. Errors name the record and field (`Task #2: last_update must be a string or null`), never the value. Missing or duplicate task IDs abort ingestion **before any send**. Dates must be `YYYY-MM-DD` (for an ISO timestamp such as `2026-10-18T00:00:00Z`, its date part is used); invalid due dates trigger clarification. IDs are trimmed and uppercased. Statuses are case-insensitive, with common synonyms (`Completed`/`Closed`/`Finished` → `Done`, `In Progress`/`In-Progress` → `Working on it`); any other status asks the owner to clarify. Fixtures saved as UTF-8 (with or without a byte order mark), UTF-16, or UTF-32 are accepted. Fixture, database, and report paths must differ, so a report can never overwrite the delivery receipts.
+All task fields must be strings, numbers (`"task_id": 1002` becomes `"1002"`), or null; valid Unicode; at most 4,000 characters. Inner whitespace is collapsed, so `John  Smith` and `John Smith` are the same owner. Errors name the record and field (`Task #2: last_update must be a string or null`), never the value. Missing or duplicate task IDs abort ingestion **before any send**. Dates must be `YYYY-MM-DD` (an ISO timestamp such as `2026-10-18T00:00:00Z` is taken in UTC, like the evaluation date); invalid due dates trigger clarification. IDs are trimmed and uppercased. Statuses are case-insensitive, with common synonyms (`Completed`/`Closed`/`Finished` → `Done`, `In Progress`/`In-Progress` → `Working on it`); any other status asks the owner to clarify. Fixtures saved as UTF-8 (with or without a byte order mark), UTF-16, or UTF-32 are accepted. Fixture, database, and report paths must differ, so a report can never overwrite the delivery receipts.
 
 ## Assumptions and trade-offs
 
@@ -149,7 +150,7 @@ Incomplete in this timebox:
 
 - CLI batch only; no HTTP API or scheduler.
 - No live quality evaluation of the LLM classifier.
-- Offline keyword rules are English-only and deliberately simple.
+- Offline keyword rules are English-only and deliberately simple; for example, a part or invoice code shaped like a task ID (`ABC-1234`) is read as a dependency on another task.
 - Clarifications of missing facts (owner, due date, status) are sent once; they are not escalated automatically if nobody answers.
 - No staleness rule based on `last_update`; retries do not read `Retry-After` headers.
 
