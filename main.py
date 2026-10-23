@@ -4,12 +4,12 @@ import argparse
 from collections import Counter
 from datetime import date
 import json
-from pathlib import Path
+import logging
 import os
-import tempfile
+from pathlib import Path
 from uuid import uuid4
 
-from followup.ai import ClaudeInterpreter, StubAI
+from followup.ai import AIError, ClaudeInterpreter, StubAI
 from followup.api import DeliveryAPI, TaskAPI
 from followup.service import Service
 from followup.store import Store, now_utc
@@ -22,17 +22,7 @@ def status_codes(text):
 def write_json(filename, content):
     path = Path(filename)
     path.parent.mkdir(parents=True, exist_ok=True)
-    # A failed write must not truncate the previous report.
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
-                                         delete=False) as file:
-            temporary = Path(file.name)
-            file.write(json.dumps(content, indent=2, ensure_ascii=False) + "\n")
-        os.replace(temporary, path)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+    path.write_text(json.dumps(content, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
 def main():
@@ -48,12 +38,15 @@ def main():
     parser.add_argument("--timeout-after-commit-once", action="store_true")
     args = parser.parse_args()
 
+    # A report written over the database would erase delivery receipts and allow duplicates.
     paths = [Path(value).resolve() for value in
              (args.fixture, args.db, args.decisions_out, args.delivery_log_out)]
     for index, path in enumerate(paths):
         for other in paths[:index]:
             if path == other or (path.exists() and other.exists() and path.samefile(other)):
                 parser.error("Fixture, database, and output paths must all be different")
+    if args.llm == "claude" and not os.environ.get("ANTHROPIC_API_KEY"):
+        parser.error("ANTHROPIC_API_KEY is required with --llm claude")
     try:
         today = date.fromisoformat(args.as_of)
         read_failures = status_codes(args.read_failures)
@@ -65,18 +58,24 @@ def main():
     try:
         run = {"id": uuid4().hex, "started_at": now_utc(), "status": "completed", "error": None}
         decisions = []
+        ai = service = None
         try:
             reader = TaskAPI(args.fixture, read_failures)
             sender = DeliveryAPI(store, send_failures, args.timeout_after_commit_once)
             ai = ClaudeInterpreter() if args.llm == "claude" else StubAI()
-            for decision in Service(reader, sender, store, ai, today).iter_results():
+            service = Service(reader, sender, store, ai, today)
+            for decision in service.iter_results():
                 decisions.append(decision)
             if any(row["delivery_status"] == "failed" for row in decisions):
                 run.update(status="failed", error="Delivery failure")
         except Exception as exc:
-            # Report the failure without copying task data or credentials from errors.
-            run.update(status="failed", error=type(exc).__name__)
+            # Only our own errors carry their text (record number, field name, HTTP status);
+            # anything else is reported by type, so task data or credentials cannot leak.
+            text = f": {exc}" if isinstance(exc, (ValueError, AIError)) else ""
+            run.update(status="failed", error=type(exc).__name__ + text)
         run["finished_at"] = now_utc()
+        run["llm_usage"] = getattr(ai, "usage", None)
+        run["llm_fallbacks"] = getattr(service, "fallbacks", 0)
         store.log("run_failed" if run["status"] == "failed" else "run_completed",
                   detail=f"Run {run['id']}: {run['error'] or 'OK'}")
         write_json(args.decisions_out, {"as_of": args.as_of, "run": run, "decisions": decisions})
@@ -85,6 +84,11 @@ def main():
         })
         counts = Counter(item["delivery_status"] for item in decisions)
         print(f"Processed {len(decisions)} tasks: {dict(counts)}")
+        if run["llm_usage"]:
+            print(f"LLM usage: {run['llm_usage']}")
+        if run["llm_fallbacks"]:
+            print(f"Warning: {run['llm_fallbacks']} note(s) used the offline fallback "
+                  "(see llm_fallback events)")
         if run["status"] == "failed":
             print(f"Run failed: {run['error']}")
         print(f"Decisions: {args.decisions_out}")
@@ -95,4 +99,6 @@ def main():
 
 
 if __name__ == "__main__":
+    # Audit events stream to stderr as they happen; the summary goes to stdout.
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     raise SystemExit(main())

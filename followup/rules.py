@@ -10,13 +10,19 @@ ESCALATE_AFTER_DAYS = 7
 COORDINATION_QUEUE = "coordination_queue"  # A role, not an invented person.
 
 
+def about(task: Task) -> str:
+    """Task ID, title and project, so the recipient needs no other context."""
+    text = f"{task.task_id} '{task.title}'"
+    return f"{text} ({task.project})" if task.project else text
+
+
 def decide(task: Task, today: date, blocker: str = "none") -> Action:
     """Choose one safe action. Missing facts take priority over reminders."""
     if task.status == "Done":
         return Action(task.task_id, "no_action", None, "Task is completed", None)
 
     if not task.owner:
-        message = f"Please assign an owner to '{task.title}'."
+        message = f"{about(task)} has no owner. Please assign one."
         reason = "Missing task owner"
         if not task.due_date:
             message += " Please also confirm its due date."
@@ -27,21 +33,22 @@ def decide(task: Task, today: date, blocker: str = "none") -> Action:
         issue = "Invalid due date" if task.due_raw else "Missing due date"
         return Action(
             task.task_id, "clarify", task.owner, issue,
-            f"Please confirm the due date for '{task.title}'.",
+            f"{about(task)} has no valid due date. Please confirm it.",
         )
 
     if task.status == "Unknown":
         return Action(
             task.task_id, "clarify", task.owner, "Unrecognized task status",
-            f"Please confirm the current status of '{task.title}'.",
+            f"{about(task)} has an unrecognized status. Please confirm its current status.",
         )
 
+    due = task.due_date.isoformat()
     if blocker == "materials":
-        # A mention alone does not make the warehouse responsible.
+        # The warehouse is asked only when the notes name it; otherwise the owner chases the ETA.
         target = "warehouse" if warehouse_dependency(task.notes) else task.owner
         return Action(
             task.task_id, "request_eta", target, "Materials dependency",
-            f"Please confirm the material delivery ETA for '{task.title}'.",
+            f"{about(task)} is waiting for materials (due {due}). Please confirm the delivery ETA.",
         )
 
     days_overdue = (today - task.due_date).days
@@ -51,14 +58,14 @@ def decide(task: Task, today: date, blocker: str = "none") -> Action:
         reason = "Upstream dependency" if blocker == "upstream" else "Task is blocked"
         return Action(
             task.task_id, "escalate", COORDINATION_QUEUE, reason,
-            f"'{task.title}' (owner: {task.owner}) is blocked. "
+            f"{about(task)} is blocked (owner: {task.owner}, due {due}). "
             "Please help unblock it and agree an ETA with the owner.",
         )
 
     if days_overdue >= ESCALATE_AFTER_DAYS:
         return Action(
             task.task_id, "escalate", COORDINATION_QUEUE, f"Overdue by {days_overdue} days",
-            f"'{task.title}' (owner: {task.owner}) was due on {task.due_date.isoformat()}. "
+            f"{about(task)} is {days_overdue} days overdue (owner: {task.owner}, due {due}). "
             "Please agree a recovery plan and ETA with the owner.",
         )
 
@@ -66,7 +73,7 @@ def decide(task: Task, today: date, blocker: str = "none") -> Action:
         days = "1 day" if days_overdue == 1 else f"{days_overdue} days"
         return Action(
             task.task_id, "follow_up_owner", task.owner, f"Overdue by {days}",
-            f"'{task.title}' was due on {task.due_date.isoformat()}. Please share the status and updated ETA.",
+            f"{about(task)} was due on {due}. Please share the status and an updated ETA.",
         )
 
     return Action(task.task_id, "no_action", None, "No action required", None)

@@ -7,25 +7,39 @@ import json
 import re
 
 
+# Common synonyms are accepted; anything else is "Unknown" and asks the owner to clarify.
 STATUSES = {
     "done": "Done",
+    "completed": "Done",
+    "complete": "Done",
+    "closed": "Done",
     "blocked": "Blocked",
     "working on it": "Working on it",
+    "in progress": "Working on it",
     "not started": "Not Started",
 }
 # Placeholder text in the owner field means that nobody is assigned yet.
 NO_OWNER = {"tbd", "tba", "n/a", "na", "none", "null", "unassigned", "unknown", "-", "?"}
 
 
-def clean(value):
-    """Convert an optional text field to a stripped string or None."""
+def clean(data, field):
+    """Convert an optional text field to a stripped string or None.
+
+    Errors name the field, never its value: fixtures may hold private data.
+    """
+    value = data.get(field)
     if value is None:
         return None
     if not isinstance(value, str):
-        raise ValueError("Task fields must be strings or null")
+        raise ValueError(f"{field} must be a string or null")
     text = value.strip()
     if len(text) > 4000:
-        raise ValueError("Task fields must not exceed 4000 characters")
+        raise ValueError(f"{field} must not exceed 4000 characters")
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        # A lone surrogate is valid JSON but would fail later, mid-batch, when stored.
+        raise ValueError(f"{field} contains invalid Unicode") from None
     return text or None
 
 
@@ -55,23 +69,23 @@ class Task:
     def from_dict(cls, data):
         if not isinstance(data, dict):
             raise ValueError("Each task must be a JSON object")
-        task_id = clean(data.get("task_id"))
+        task_id = clean(data, "task_id")
         if not task_id:
             raise ValueError("Task without task_id: refusing an unsafe send")
-        due_raw = clean(data.get("due_date"))
-        status = (clean(data.get("status")) or "").casefold()
-        owner = clean(data.get("assigned_to"))
-        updated = parse_date(clean(data.get("last_update")))
+        due_raw = clean(data, "due_date")
+        status = (clean(data, "status") or "").casefold()
+        owner = clean(data, "assigned_to")
+        updated = parse_date(clean(data, "last_update"))
         return cls(
             task_id=task_id.upper(),
-            project=clean(data.get("project")) or "",
-            title=clean(data.get("task")) or "Untitled task",
+            project=clean(data, "project") or "",
+            title=clean(data, "task") or "Untitled task",
             owner=None if owner and owner.casefold() in NO_OWNER else owner,
             due_date=parse_date(due_raw),
             due_raw=due_raw,
             status=STATUSES.get(status, "Unknown"),
             last_update=updated.isoformat() if updated else None,
-            notes=clean(data.get("notes")) or "",
+            notes=clean(data, "notes") or "",
         )
 
     def fingerprint(self, decision, target):

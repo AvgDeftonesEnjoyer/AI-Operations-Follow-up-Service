@@ -2,12 +2,15 @@
 
 import json
 import os
+import time
 from urllib import error, request
 
 from .notes import simple_interpretation
 
 
 BLOCKER_TYPES = {"none", "materials", "upstream"}
+# A rejected key is a configuration error: stop instead of quietly running on the fallback.
+FATAL_REASONS = {"http_401", "http_403"}
 
 
 class NoRedirects(request.HTTPRedirectHandler):
@@ -33,6 +36,10 @@ class AIError(Exception):
         # A short fixed category for the audit log, never provider text or secrets.
         self.reason = reason
 
+    @property
+    def transient(self):
+        return self.reason in {"timeout", "network_error", "http_429"} or self.reason.startswith("http_5")
+
 
 class StubAI:
     def interpret(self, notes: str) -> str:
@@ -48,6 +55,8 @@ class ClaudeInterpreter:
         if not self.api_key:
             raise ValueError("ANTHROPIC_API_KEY is required with --llm claude")
         self.http = request.build_opener(NoRedirects())
+        # Token totals for the run report: the cost signal.
+        self.usage = {"calls": 0, "input_tokens": 0, "output_tokens": 0}
 
     def interpret(self, notes: str) -> str:
         # Notes are user-provided data, never instructions for the assistant.
@@ -82,11 +91,31 @@ class ClaudeInterpreter:
         )
 
         try:
+            result = self._send(http_request)
+        except AIError as exc:
+            if not exc.transient:
+                raise
+            time.sleep(1)  # One short retry for 429/5xx/timeouts; the fallback covers the rest.
+            result = self._send(http_request)
+
+        # Validate again locally. Never trust an external response blindly.
+        if not isinstance(result, dict) or set(result) != {"blocker_type"}:
+            raise AIError("Claude returned unexpected JSON fields", "invalid_schema")
+        if not isinstance(result["blocker_type"], str) or result["blocker_type"] not in BLOCKER_TYPES:
+            raise AIError("Claude returned an unapproved blocker type", "invalid_schema")
+        return result["blocker_type"]
+
+    def _send(self, http_request):
+        try:
             with self.http.open(http_request, timeout=15) as response:
                 raw = response.read(65537)
                 if len(raw) > 65536:
                     raise AIError("Claude response exceeds size limit", "oversized_response")
                 payload = json.loads(raw)
+            usage = payload.get("usage") or {}
+            self.usage["calls"] += 1
+            self.usage["input_tokens"] += usage.get("input_tokens", 0)
+            self.usage["output_tokens"] += usage.get("output_tokens", 0)
             # A refusal or truncated response is not usable, even if it contains JSON.
             if payload["stop_reason"] != "end_turn":
                 reason = {"max_tokens": "truncated_output", "refusal": "refusal"}.get(
@@ -102,7 +131,7 @@ class ClaudeInterpreter:
             texts = [block["text"] for block in blocks if block["type"] == "text"]
             if len(texts) != 1:
                 raise AIError("Claude did not return one text block", "unsupported_content")
-            result = json.loads(texts[0])
+            return json.loads(texts[0])
         except error.HTTPError as exc:
             exc.close()
             raise AIError(f"Claude returned HTTP {exc.code}", f"http_{exc.code}") from exc
@@ -112,22 +141,17 @@ class ClaudeInterpreter:
             raise AIError(f"Claude request failed: {reason}", reason) from exc
         except ValueError as exc:
             raise AIError("Claude returned invalid JSON", "invalid_json") from exc
-        except (KeyError, IndexError, TypeError) as exc:
+        except (KeyError, IndexError, TypeError, AttributeError) as exc:
             raise AIError("Claude response has an unexpected shape", "invalid_schema") from exc
-
-        # Validate again locally. Never trust an external response blindly.
-        if not isinstance(result, dict) or set(result) != {"blocker_type"}:
-            raise AIError("Claude returned unexpected JSON fields", "invalid_schema")
-        if not isinstance(result["blocker_type"], str) or result["blocker_type"] not in BLOCKER_TYPES:
-            raise AIError("Claude returned an unapproved blocker type", "invalid_schema")
-        return result["blocker_type"]
 
 
 def interpret_safely(ai, notes: str) -> tuple[str, str | None]:
     """Return (blocker_type, fallback_reason); the reason is None when the model answer is used."""
     try:
         label = ai.interpret(notes)
-    except AIError as exc:  # Bad provider responses must not stop the batch.
+    except AIError as exc:  # Bad provider responses must not stop the batch; a bad key must.
+        if exc.reason in FATAL_REASONS:
+            raise
         return simple_interpretation(notes), exc.reason
     except Exception:  # Unknown errors may carry secrets in their text, so log only a category.
         return simple_interpretation(notes), "provider_error"

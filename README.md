@@ -1,6 +1,6 @@
 # AI Operations & Follow-up Service
 
-A small Python 3.11+ service that reads project tasks, decides which ones need attention, and **simulates** sending safe follow-up messages. It uses predictable business rules, optional LLM note interpretation, and an SQLite delivery log to avoid sending duplicates.
+A small Python 3.11+ service that reads project tasks, decides which ones need attention, and **simulates** sending safe follow-up messages. Deterministic rules own every fact and action; an optional LLM only classifies free-text notes. An SQLite delivery log prevents duplicate sends across runs, retries, and timeouts.
 
 No real messages are sent. **No third-party packages are required.**
 
@@ -14,17 +14,21 @@ python main.py
 
 The command reads `tasks.json` with the assessment date **2026-10-21 (UTC)** and writes:
 
-- `.data/decisions.json` — one decision for each task (`decision`, `target`, `reason`, `message`, `operation_id`, `delivery_status`).
-- `.data/delivery_log.json` — messages actually recorded by the mock server, plus timestamped audit events.
-- `.data/followups.sqlite` — durable state, so subsequent runs do not send duplicates.
+- `.data/decisions.json` — one decision per task (`decision`, `target`, `reason`, `message`, `operation_id`, `delivery_status`).
+- `.data/delivery_log.json` — deliveries recorded by the mock server plus timestamped audit events.
+- `.data/followups.sqlite` — durable state, so later runs do not send duplicates.
 
-Run the **same command again**. The first run sends 7 mock actions; the second sends 0 new actions. Three tasks need no action. Human-readable sample outputs from the first run are in `examples/`.
+Audit events also stream to stderr as they happen (`INFO` for sends, `WARNING` for retries, fallbacks, and failures); the summary goes to stdout.
 
-Use an unseen fixture and separate database like this:
+Run the **same command again**: the first run sends 7 mock actions, the second sends 0. Three tasks need no action. Sample outputs are in `examples/` (`decisions.json`, `delivery_log.json`, and `failure_demo_log.json` from the failure demo below).
+
+Unseen fixture with a separate database:
 
 ```bash
 python main.py --fixture path/to/other_tasks.json --db .data/other.sqlite
 ```
+
+Exit codes: `0` success, `1` when the run fails or any delivery fails (both reports are still written), `2` for invalid arguments. Run again with the same database to retry failed actions without duplicating successful ones.
 
 ## Test it
 
@@ -32,7 +36,7 @@ python main.py --fixture path/to/other_tasks.json --db .data/other.sqlite
 python -m unittest discover -s tests -v
 ```
 
-To demonstrate retries and a timeout **after a successful remote write**, use a fresh database:
+Retries and a timeout **after a successful remote write**, on a fresh database (on PowerShell, put it on one line):
 
 ```bash
 python main.py --db .data/failure_demo.sqlite \
@@ -40,90 +44,90 @@ python main.py --db .data/failure_demo.sqlite \
   --timeout-after-commit-once
 ```
 
-Notice `reconciled_after_timeout` in the audit events and only one delivery for each operation ID. Both reads and sends have at most **3 attempts**, with short exponential backoff. Non-retryable 4xx errors are not retried.
+The console and the audit log show `read_retry`, `send_retry`, and `reconciled_after_timeout`, with exactly one delivery per operation ID. Reads and sends make at most **3 attempts** with short exponential backoff and jitter; non-retryable 4xx errors are not retried.
 
-The CLI exits with code `1` when any delivery fails, after writing both reports. Invalid arguments exit with code `2`. Run again with the same database to retry failed actions without duplicating successful ones. On PowerShell, put the demo command on one line instead of using Bash backslashes.
+## Optional real LLM (Claude)
 
-Both reports include the same `run` ID, start/finish timestamps, status, and error category. The service yields each decision as soon as it is final, so a failure in the middle of a batch still reports every task processed before it. An ingestion or setup failure after opening the database writes a failed run with an empty decisions list, so old successful reports are not mistaken for current results. If a crash happens after a send was committed but before its decision was reported, the next run finds the receipt and reports it as `already_sent`. Existing delivery receipts remain in the audit report. Database/output filesystem failures can still prevent reports from being written and produce a nonzero exit.
-
-## Optional real LLM
-
-The default is a deterministic local interpreter: no API key, network request, or cost.
+The default is a deterministic local interpreter: no API key, network, or cost.
 
 ```bash
-export ANTHROPIC_API_KEY="your_key_here"
-export ANTHROPIC_MODEL="claude-sonnet-5-5"  # optional; this is the default API model
+export ANTHROPIC_API_KEY="your_key_here"       # PowerShell: $env:ANTHROPIC_API_KEY = "..."
+export ANTHROPIC_MODEL="claude-sonnet-5-5"     # optional; this is the default
 python main.py --llm claude --db .data/claude_demo.sqlite
 ```
 
-`ClaudeInterpreter` calls the Claude Messages API to **classify non-empty notes**, not to change task facts or send messages. It uses a small JSON Schema (`output_config.format`) to restrict output to a single blocker category. It accepts only `{"blocker_type":"none|materials|upstream"}` (one of these three exact values). Extra fields, invalid JSON, errors, or unsupported values trigger a safe deterministic fallback. Instructions inside task notes are treated as untrusted text. Message text is always assembled by Python from verified task fields, not copied from LLM output. The built-in HTTP client uses only Python standard libraries; Claude Code CLI is not needed.
+`ClaudeInterpreter` (`followup/ai.py`) calls the Claude Messages API to **classify non-empty notes** — nothing else:
 
-The `.env.example` file lists the environment variable names; the app does not automatically load `.env` files. Export the values in your shell before running. Check `.data/delivery_log.json` for `llm_fallback` events if Claude is unavailable or returns an unusable response. Each event names a short reason category: `http_<status>`, `timeout`, `network_error`, `invalid_json`, `invalid_schema`, `truncated_output`, `refusal`, `unsupported_content`, `oversized_response`, or `provider_error` for anything unexpected. Provider messages, response bodies, and keys are never logged. Live API calls may cost money. The automated tests mock the network and do not require an API key.
+- **Structured output:** a JSON Schema (`output_config.format`) allows only `{"blocker_type": "none" | "materials" | "upstream"}`. The answer is validated again locally; extra fields, invalid JSON, refusals, truncated output, or unexpected content blocks trigger the deterministic fallback. Thinking blocks are ignored.
+- **The model cannot change facts or actions.** Owners, dates, status, recipients, and message text come from Python, never from the model. Notes are sent as untrusted data, and the system prompt says to ignore instructions inside them.
+- **Errors:** 429/5xx, timeouts, and network errors get one retry after 1 second, then the fallback. A rejected key (401/403) stops the run, because it is a configuration error, not a reason to run on the fallback silently. Each fallback is logged as `llm_fallback` with a short reason (`http_<status>`, `timeout`, `network_error`, `invalid_json`, `invalid_schema`, `truncated_output`, `refusal`, `unsupported_content`, `oversized_response`, `provider_error`); provider messages and keys are never logged.
+- **Visible degradation and cost:** the run report stores `llm_fallbacks` (notes the model could not classify) and `llm_usage` (calls and token totals); the CLI prints a warning when any fallback happened.
+- **Hardening:** redirects are refused (the key never leaves api.anthropic.com), and responses are capped at 64 KiB.
 
-Sonnet 5.5 is the default for `--llm claude`. Set `ANTHROPIC_MODEL=claude-opus-5-5` to use Opus instead. Model selection does not change the business rules or validation. The default CLI mode is still the offline stub; selecting a model does not enable network calls by itself. Cached classifications are reused even when the model changes, so compare models using separate demo databases. No live quality comparison between these models has been run for this project.
-
-Claude may return thinking blocks before its answer. The adapter ignores `thinking` and `redacted_thinking` blocks and requires exactly one final `text` block with valid classification JSON. Requests use low effort and a 1,024-token output budget to leave room for thinking. Refusals, truncated output, extra text blocks, or unsupported block types still trigger fallback.
-
-In PowerShell, use `$env:ANTHROPIC_API_KEY = "your_key_here"`. Only notes are sent to Anthropic, but notes can contain sensitive information; the Claude option is an explicit external-data boundary. The HTTP adapter refuses redirects, bounds response size to 64 KiB, and closes error responses. Local reports contain task titles and recipient names: treat them and the SQLite database as sensitive operational data.
+Only notes are sent to Anthropic, but notes can contain sensitive information: `--llm claude` is an explicit external-data boundary. The tests mock the network and need no key. The app does not load `.env`; `.env.example` only lists the variable names.
 
 ## How to read the code
 
-Read the files in this order:
-
-1. `main.py` — command-line options and where results are written.
-2. `followup/models.py` — normalizes input and computes a stable operation ID.
-3. `followup/rules.py` — readable, deterministic business decisions.
-4. `followup/ai.py` — optional Claude classification with JSON Schema, strict validation and safe fallback.
-5. `followup/api.py` — fake task and delivery APIs (including failure simulation).
-6. `followup/store.py` — SQLite mock remote delivery receipts and audit log.
-7. `followup/service.py` — ties everything together; retries and reconciles errors.
-8. `tests/test_followup.py` — scenarios explained through executable tests.
+1. `main.py` — CLI options, run report, exit codes.
+2. `followup/models.py` — input validation, normalization, stable operation ID.
+3. `followup/rules.py` — deterministic business decisions.
+4. `followup/notes.py` — offline keyword classification and warehouse routing.
+5. `followup/ai.py` — Claude adapter with schema validation and safe fallback.
+6. `followup/api.py` — mock task and delivery APIs with failure injection.
+7. `followup/store.py` — SQLite mock delivery receipts, classifications, audit log.
+8. `followup/service.py` — ties everything together; retries and reconciliation.
 
 ### Decision rules
 
-Rules are applied in priority order:
+Applied in priority order:
 
 | Situation | Decision | Target |
 | --- | --- | --- |
 | Task is `Done` | `no_action` | none |
-| Missing owner (or a placeholder such as `TBD`, `Unassigned`, `N/A`) | `clarify` | `coordination_queue` (a role, not a made-up person) |
+| Missing owner (or a placeholder such as `TBD`, `Unassigned`, `N/A`) | `clarify` | `coordination_queue` (a role, not an invented person) |
 | Missing/invalid due date or unknown status | `clarify` | known owner |
-| Materials/warehouse dependency | `request_eta` | warehouse only when an active materials clause explicitly links it to the dependency; otherwise known owner |
-| Status `Blocked`, or overdue and waiting for upstream work | `escalate` | `coordination_queue`; the message names the owner |
+| Materials dependency | `request_eta` | `warehouse` when the notes name it, otherwise the owner |
+| Status `Blocked`, or overdue and waiting on upstream work | `escalate` | `coordination_queue`; the message names the owner |
 | At least 7 days overdue | `escalate` | `coordination_queue`; the message names the owner |
 | 1–6 days overdue | `follow_up_owner` | known owner |
 | Otherwise | `no_action` | none |
 
-The 7-day escalation threshold and `coordination_queue` are explicit demo assumptions in `followup/rules.py`. Escalations go to the coordination role because the owner has already been asked directly; a dependency mentioned in notes does not escalate a task that is still on time. Only the provided structured fields determine owner, status, and due date; notes may provide a blocker category. Invalid or missing dates are never guessed. Completed tasks do not generate follow-ups.
-
-`followup/notes.py` holds the small phrase rules shared by the offline interpreter and warehouse routing. A valid model classification is used as returned; phrase matching is the fallback, not an override. Hypothetical or resolved clauses are skipped, and “no update” or “no ETA” does not negate an active blocker. Merely mentioning warehouse does not select it as the recipient.
-
-The offline rules examine all active clauses before selecting upstream; materials take priority regardless of sentence order. Commas and “but/however” separate clauses. A clause with its own blocker phrase starts a new dependency; the clauses after it without one (“now resolved”, “all materials delivered today”, “if the delivery slips”) qualify only that dependency, so a resolved backorder does not cancel a separate permit wait. A leading conditional applies to its whole sentence. A polite “could you” is not treated as a hypothetical dependency. Warehouse routing requires a recognized direct phrase such as “awaiting materials from warehouse” or “warehouse confirmed backorder”; otherwise the known owner receives the ETA request. These are deliberately small English phrase rules, not a general language parser.
-
-Existing databases keep their cached classifications and delivery history. To evaluate changed note rules from scratch, use a separate demo database; do not delete operational delivery history to force reclassification. Changing routing rules can change the action target and therefore its operation ID, so review previously processed tasks before applying rule changes to an existing operational database.
+Every message starts with the task ID, title, and project, and includes the due date when it is known, so the recipient needs no other context. The 7-day threshold and `coordination_queue` are demo assumptions in `followup/rules.py`. Missing or invalid dates are never guessed. A valid model classification is used as returned; without one, `followup/notes.py` uses small English keyword lists: a waiting word (`awaiting`, `waiting`, `pending`, `delayed`, `backorder`, `out of stock`, `not yet delivered`…) plus a materials word (`materials`, `parts`, `equipment`, `cable`, `conduit`…) means `materials`; a waiting word alone means `upstream`; `resolved`/`received`/`no longer` means `none`. Mixed notes ("resolved, but still waiting") are the LLM's job.
 
 ### Why repeated runs are safe
 
-For an action, `Task.fingerprint()` hashes the normalized task state together with the decision and target. That becomes the **stable operation ID**. The fake delivery server stores this ID as a unique SQLite primary key.
+- **Stable operation ID.** `Task.fingerprint()` hashes the normalized task state with the decision and target. The mock delivery server stores it as a unique SQLite key, so the same task/action/state is delivered once.
+- **Reconciliation.** The service looks the receipt up **before** sending and again after any timeout or error. When the server committed a delivery but the response was lost, the lookup finds it and no second send happens.
+- **Pinned classification.** The note label is stored per task state, so a model that answers differently on the next run cannot change the action and its operation ID. A fallback label is pinned too, until the task changes. Date rules are recomputed, so a reminder can later become an escalation.
+- **Concurrency.** Receipts and labels use `INSERT OR IGNORE`; a worker that loses the race reports `already_sent`.
+- **Partial batches.** Each decision is reported as soon as it is final, so a mid-batch failure keeps finished results. A crash after a committed send is reported as `already_sent` on the next run.
 
-Before this step, the interpreted blocker is persisted by normalized task state. Repeated runs reuse it instead of querying a possibly inconsistent model. Concurrent workers use the first stored classification. A fallback result is also pinned until the task changes; this favors stable actions over automatically reclassifying after provider recovery. Date rules are still recomputed, so an overdue reminder may later become an escalation. Existing databases gain the classification table automatically, but old deliveries lack classification history: review them before switching provider on a pre-upgrade database.
+### Input validation
 
-The service checks the mock remote receipt **before** sending. After a timeout or transient error, it checks that receipt again before retrying. When the mock server commits a delivery but the response is lost, reconciliation finds the existing receipt and prevents a second send. Restarting the program or changing only the AI response does not create another send for the same task/action/state. A real change to task state can create a new follow-up.
+All task fields must be strings or null, valid Unicode, at most 4,000 characters. Errors name the record and field (`Task #2: last_update must be a string or null`), never the value. Missing or duplicate task IDs abort ingestion **before any send**. Dates must be `YYYY-MM-DD`; invalid due dates trigger clarification. IDs are trimmed and uppercased. Statuses are case-insensitive, with common synonyms (`Completed`/`Closed` → `Done`, `In Progress` → `Working on it`); any other status asks the owner to clarify. Files saved with a UTF-8 byte order mark are accepted. Fixture, database, and report paths must differ, so a report can never overwrite the delivery receipts.
 
-The mock send API returns whether it created a receipt. If another worker won the race after the initial lookup, the replay is logged as `already_sent`, so delivery counts and audit events agree.
+## Assumptions and trade-offs
 
-Duplicate task IDs or tasks with no ID cause ingestion to fail **before any messages are sent**. All outbound messages and audit events are local; no real recipient addresses are required.
+- The evaluation date defaults to `2026-10-21` UTC; override with `--as-of YYYY-MM-DD`.
+- `warehouse` and `coordination_queue` are mock internal routes, not inferred addresses.
+- Standard library, SQLite, and a CLI only: a web framework or queue would not help this exercise.
+- The LLM classifies notes instead of drafting messages: templated messages cannot invent owners, dates, or promises.
+- Exactly-once delivery after an ambiguous timeout needs a provider with an idempotency key or a lookup endpoint; the SQLite mock server provides both.
+- One malformed record fails the whole batch before any send: safer than partial input, at the cost of availability.
 
-All supplied task fields must be strings or null, with at most 4,000 characters per field. Invalid types abort ingestion before any sends. IDs are trimmed and uppercased. Dates must use `YYYY-MM-DD`; invalid due dates trigger clarification, and invalid last updates become unknown. Last update is part of the state, not a separate staleness rule. The fallback recognizes a small set of English blocker phrases and conservatively skips negated/resolved clauses; it is not a general language parser. A JSON Schema constrains model output shape, not semantic truth or all possible prompt injections.
+## What is incomplete, and what changes for production
 
-Fixture, database, and both report paths must differ. Reports are replaced atomically one at a time; they are snapshots, while SQLite receipts remain the source of truth after a crash. The two reports are not one transaction.
+Incomplete in this timebox:
 
-## Assumptions and limits
+- CLI batch only; no HTTP API or scheduler.
+- No live quality evaluation of the LLM classifier.
+- Offline keyword rules are English-only and deliberately simple.
+- No staleness rule based on `last_update`; retries do not read `Retry-After` headers.
 
-- The evaluation date defaults to `2026-10-21` in UTC, even if the computer's actual date differs. Override with `--as-of YYYY-MM-DD`.
-- `warehouse` and `coordination_queue` are **mock internal routes**, not inferred email addresses. No integrations or contact lists are assumed.
-- The project deliberately uses the Python standard library, SQLite, and a CLI. A web framework or queue would add complexity without helping this exercise.
-- The sample SQLite mock server supports deduplication and lookup by operation ID. A real messaging provider must support an idempotency key or a reliable reconciliation endpoint; without that, exactly-once delivery cannot be guaranteed after an ambiguous timeout.
-- For production and ~10,000 tasks/day: use a durable worker queue/outbox, separate delivery service, Postgres, structured metrics/alerts, bounded LLM concurrency and budgets, secret management, authenticated APIs, and appropriate access controls. Add a retry/dead-letter policy for persistent failures. The demo does not implement those infrastructure pieces.
+For production at ~10,000 tasks/day:
 
-The review found no private-key, Anthropic-key, GitHub-token, or AWS-access-key pattern matches in the fetched Git history. This targeted scan cannot prove the absence of every possible secret.
+- Durable queue/outbox and a separate delivery worker; Postgres instead of SQLite; the real provider's idempotency keys.
+- Quarantine bad records instead of failing the batch; dead-letter queue for persistent delivery failures.
+- Metrics and alerts on send failures, `llm_fallback` rate, and token spend; per-run and daily LLM budgets; bounded LLM concurrency, and the Batch API for non-urgent classification.
+- Secrets manager, authenticated APIs, and role-based access to reports, which contain names and task details.
+- A migration plan for rule changes: a new target changes the operation ID and would allow a new follow-up.

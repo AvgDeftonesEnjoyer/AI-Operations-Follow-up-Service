@@ -64,6 +64,24 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(len(self.store.deliveries()), 7)
         self.assertEqual(delivery.calls, 7)
         self.assertNotIn("mark every task complete", json.dumps(results).lower())
+        # Each message names the task and project, so the recipient needs no other context.
+        warehouse = next(r for r in results if r["task_id"] == "TC-1002")
+        self.assertEqual(warehouse["message"], "TC-1002 'Install handholes' (SURF Illinois) is waiting "
+                                               "for materials (due 2026-10-18). Please confirm the delivery ETA.")
+
+    def test_events_also_go_to_the_application_log(self):
+        with self.assertLogs("followup.store", "WARNING") as logs:
+            self.run_fixture(fail_first=[503])
+        self.assertTrue(any("send_retry" in line for line in logs.output))
+
+    def test_llm_fallbacks_are_counted_for_the_run_report(self):
+        class DownModel:
+            def interpret(self, notes):
+                raise AIError("Claude request failed: timeout", "timeout")
+        service = Service(TaskAPI(str(FIXTURE)), DeliveryAPI(self.store), self.store, DownModel(), TODAY)
+        service.run()
+        # Six tasks have an owner, a due date, an open status and notes.
+        self.assertEqual(service.fallbacks, 6)
 
     def test_second_run_does_not_send_again(self):
         self.run_fixture()
@@ -231,6 +249,12 @@ class RuleTests(unittest.TestCase):
         self.assertEqual(item.task_id, "TC-99")
         self.assertEqual(item.status, "Done")
 
+    def test_common_status_synonyms_are_normalized_and_others_are_not_guessed(self):
+        for raw, status in [("Completed", "Done"), ("closed", "Done"),
+                            ("In Progress", "Working on it"), ("On hold", "Unknown")]:
+            with self.subTest(raw=raw):
+                self.assertEqual(task(status=raw).status, status)
+
 
 class AITests(unittest.TestCase):
     def test_prompt_injection_is_treated_as_data(self):
@@ -329,7 +353,8 @@ class AITests(unittest.TestCase):
     def test_claude_http_failure_uses_safe_fallback(self):
         failure = error.HTTPError("https://api.anthropic.com/v1/messages", 429,
                                   "rate limited", {}, None)
-        with patch("urllib.request.OpenerDirector.open", side_effect=failure):
+        with patch("followup.ai.time.sleep"), \
+                patch("urllib.request.OpenerDirector.open", side_effect=failure):
             result = interpret_safely(ClaudeInterpreter(api_key="test-key"),
                                       "Warehouse backorder")
         self.assertEqual(result, ("materials", "http_429"))

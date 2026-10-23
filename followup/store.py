@@ -2,8 +2,14 @@
 
 from datetime import datetime, timezone
 import json
+import logging
 from pathlib import Path
 import sqlite3
+
+
+logger = logging.getLogger(__name__)
+logger.addHandler(logging.NullHandler())  # Silent unless the CLI configures logging.
+WARNING_EVENTS = {"read_retry", "send_retry", "send_failed", "llm_fallback", "run_failed"}
 
 
 def now_utc():
@@ -72,11 +78,14 @@ class Store:
         return cursor.rowcount == 1
 
     def log(self, event: str, operation_id: str | None = None, detail: str = ""):
+        """Every audit event goes to SQLite and to the application log."""
         with self.connection:
             self.connection.execute(
                 "INSERT INTO events (timestamp, operation_id, event, detail) VALUES (?, ?, ?, ?)",
                 (now_utc(), operation_id, event, detail),
             )
+        level = logging.WARNING if event in WARNING_EVENTS else logging.INFO
+        logger.log(level, "%s op=%s %s", event, operation_id or "-", detail)
 
     def deliveries(self):
         rows = self.connection.execute(

@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from datetime import date
+import random
 import time
 
 from .ai import interpret_safely
@@ -14,8 +15,11 @@ MAX_ATTEMPTS = 3
 
 
 def pause(attempt: int):
-    """Short exponential backoff, capped to avoid request floods."""
-    time.sleep(min(0.1 * 2 ** (attempt - 1), 0.5))
+    """Short exponential backoff, capped to avoid request floods.
+
+    Jitter keeps parallel workers from retrying in lockstep.
+    """
+    time.sleep(min(0.1 * 2 ** (attempt - 1), 0.5) * random.uniform(0.5, 1))
 
 
 class Service:
@@ -25,20 +29,30 @@ class Service:
         self.store = store
         self.ai = ai
         self.today = today
+        self.fallbacks = 0  # Notes the LLM could not classify in this run.
 
     def fetch_tasks(self):
         for attempt in range(1, MAX_ATTEMPTS + 1):
             try:
-                tasks = [Task.from_dict(row) for row in self.task_api.fetch()]
-                ids = [task.task_id for task in tasks]
-                if len(ids) != len(set(ids)):
-                    raise ValueError("Duplicate task IDs in fixture: refusing inconsistent sends")
-                return tasks
+                rows = self.task_api.fetch()
+                break
             except APIError as error:
                 if not error.retryable or attempt == MAX_ATTEMPTS:
                     raise
                 self.store.log("read_retry", detail=f"HTTP {error.status_code}; attempt {attempt}")
                 pause(attempt)
+
+        tasks = []
+        for number, row in enumerate(rows, 1):
+            try:
+                tasks.append(Task.from_dict(row))
+            except ValueError as error:
+                # Name the record so an unseen fixture can be fixed quickly.
+                raise ValueError(f"Task #{number}: {error}") from None
+        ids = [task.task_id for task in tasks]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Duplicate task IDs in fixture: refusing inconsistent sends")
+        return tasks
 
     def deliver(self, action):
         key = action.operation_id
@@ -82,6 +96,7 @@ class Service:
                     blocker, fallback_reason = interpret_safely(self.ai, task.notes)
                     blocker = self.store.save_classification(state_id, blocker)
                     if fallback_reason is not None:
+                        self.fallbacks += 1
                         self.store.log("llm_fallback",
                                        detail=f"Task {task.task_id}; reason={fallback_reason}")
 
