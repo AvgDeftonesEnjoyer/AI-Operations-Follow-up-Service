@@ -103,19 +103,26 @@ class Task:
         return digest({"task_id": self.task_id, "notes": self.notes})
 
     @property
+    def heading(self):
+        """Task ID, title and project: how every message names the task."""
+        text = f"{self.task_id} '{self.title}'"
+        return f"{text} ({self.project})" if self.project else text
+
+    @property
     def due_key(self):
         """The deadline as one spelling: "2026-10-18" and "2026-10-18T00:00:00Z" are the same."""
         return self.due_date.isoformat() if self.due_date else self.due_raw
 
     def operation_id(self, action):
-        """One ID per task, action, recipient and message text: the same text is never sent twice.
+        """One ID per task, action, recipient and request: the same request is never sent twice.
 
-        Notes and last_update are not part of any message, so editing or touching a task never
-        resends; a different spelling of the owner ("sam lee") does not count either.
+        The request is the message after the task's heading, so renaming the task, editing
+        notes, touching last_update, or another spelling of the owner never resends.
         """
+        request = (action.message or "").removeprefix(self.heading)
         return digest({
             "task_id": self.task_id, "decision": action.decision,
-            "target": (action.target or "").casefold(), "message": (action.message or "").casefold(),
+            "target": (action.target or "").casefold(), "request": request.casefold(),
         })
 
 

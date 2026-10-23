@@ -1,11 +1,11 @@
 {
   "as_of": "2026-10-21",
   "run": {
-    "id": "f2129d8115734cac8d12a34f8f96112a",
-    "started_at": "2026-10-23T18:29:28+00:00",
+    "id": "927a6f2fbd19412599f4154bd06b89a4",
+    "started_at": "2026-10-23T18:45:39+00:00",
     "status": "completed",
     "error": null,
-    "finished_at": "2026-10-23T18:29:28+00:00",
+    "finished_at": "2026-10-23T18:45:39+00:00",
     "llm_usage": null,
     "llm_fallbacks": 0
   },
@@ -16,7 +16,7 @@
       "target": "John Smith",
       "reason": "Overdue since 2026-10-18",
       "message": "TC-1001 'Fiber splicing' (SURF Illinois) was due on 2026-10-18. Please share the status and an updated ETA.",
-      "operation_id": "b215927e6b934c70d832ee5c",
+      "operation_id": "a4c5d518b7a0df96615bdeeb",
       "delivery_status": "sent"
     },
     {
@@ -24,8 +24,8 @@
       "decision": "request_eta",
       "target": "warehouse",
       "reason": "Materials dependency",
-      "message": "TC-1002 'Install handholes' (SURF Illinois) is waiting for materials (due 2026-10-18). Please confirm the delivery ETA.",
-      "operation_id": "e1bf633cad895649bbb379c5",
+      "message": "TC-1002 'Install handholes' (SURF Illinois) is waiting for materials (overdue since 2026-10-18). Please confirm the delivery ETA.",
+      "operation_id": "4d714bdb62dbe8a14916d6e4",
       "delivery_status": "sent"
     },
     {
@@ -43,7 +43,7 @@
       "target": "coordination_queue",
       "reason": "Missing task owner",
       "message": "TC-1004 'Permit review' (Wisconsin Build) has no owner. Please assign one.",
-      "operation_id": "25ba255d1c0e3c89d2e1ea07",
+      "operation_id": "7331120bd072f50255943945",
       "delivery_status": "sent"
     },
     {
@@ -52,7 +52,7 @@
       "target": "Alex Brown",
       "reason": "Missing due date",
       "message": "TC-1005 'As-built drawings' (Indiana OSP) has no valid due date. Please confirm it.",
-      "operation_id": "639f405db06940b5c4f6fa88",
+      "operation_id": "4d6ab849e636c2ce1df3c7b6",
       "delivery_status": "sent"
     },
     {
@@ -61,7 +61,7 @@
       "target": "Jamie Lee",
       "reason": "Overdue since 2026-10-20",
       "message": "TC-1006 'Splice verification' (Minnesota Fiber) was due on 2026-10-20. Please share the status and an updated ETA.",
-      "operation_id": "fb61fe0d7ed45548b9cc3fa3",
+      "operation_id": "9cc599704e77a4bfaf93f5d0",
       "delivery_status": "sent"
     },
     {
@@ -79,7 +79,7 @@
       "target": "coordination_queue",
       "reason": "Upstream dependency",
       "message": "TC-1008 'Test fiber signal' (SURF Illinois) is blocked (owner: Chris Patel, due 2026-10-15). Please help unblock it and agree an ETA with the owner.",
-      "operation_id": "f210eabd3f0c08539fd0d40d",
+      "operation_id": "77e68fc7fe20c83b4d0dbf72",
       "delivery_status": "sent"
     },
     {
@@ -88,7 +88,7 @@
       "target": "warehouse",
       "reason": "Materials dependency",
       "message": "TC-1009 'Material reconciliation' (Michigan Expansion) is waiting for materials (due 2026-10-21). Please confirm the delivery ETA.",
-      "operation_id": "cec01a571bc24c39e561531e",
+      "operation_id": "8af274fd7f228102da8caf72",
       "delivery_status": "sent"
     },
     {

@@ -177,6 +177,32 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(self.run_service(Mock(), date(2026, 10, 19))[0]["delivery_status"], "sent")
         self.assertEqual(self.run_service(Mock(), date(2026, 10, 22))[0]["decision"], "escalate")
 
+    def test_an_eta_request_before_the_deadline_is_repeated_after_it_and_then_escalates(self):
+        self.fixture.write_text(json.dumps([{**ROW, "status": "Blocked", "due_date": "2026-10-22",
+                                             "notes": "Waiting on materials from supplier"}]))
+        self.run_service(Mock())  # 10-21: ETA request while still on time.
+        after = self.run_service(Mock(), date(2026, 10, 23))[0]
+        self.assertEqual((after["decision"], after["delivery_status"]), ("request_eta", "sent"))
+        self.assertEqual(self.run_service(Mock(), date(2026, 10, 26))[0]["decision"], "escalate")
+
+    def test_renaming_a_task_does_not_resend_the_same_request(self):
+        self.fixture.write_text(json.dumps([ROW]))
+        self.run_service(Mock())
+        self.fixture.write_text(json.dumps([{**ROW, "task": "Inspect - phase 1", "project": "Demo-2"}]))
+        self.assertEqual(self.run_service(Mock(), date(2026, 10, 22))[0]["delivery_status"], "already_sent")
+        self.assertEqual(len(self.store.deliveries()), 1)
+
+    def test_an_upstream_wait_is_escalated_once(self):
+        task = {**ROW, "due_date": "2026-10-10", "notes": ""}
+        self.fixture.write_text(json.dumps([task]))
+        self.run_service(Mock())  # 10-21: follow-up to the owner.
+        self.fixture.write_text(json.dumps([{**task, "notes": "Waiting on TC-1002"}]))
+        upstream = Mock(interpret=Mock(return_value="upstream"))
+        self.assertEqual(self.run_service(upstream, date(2026, 10, 22))[0]["delivery_status"], "sent")
+        later = self.run_service(upstream, date(2026, 10, 24))[0]
+        self.assertEqual((later["decision"], later["delivery_status"]), ("escalate", "already_sent"))
+        self.assertEqual(len(self.store.deliveries()), 2)
+
     def test_a_materials_label_does_not_stop_escalation(self):
         # Even a model tricked into answering "materials" cannot silence an overdue task.
         self.fixture.write_text(json.dumps([{**ROW, "due_date": "2026-10-10",
@@ -356,6 +382,10 @@ class RegressionTests(unittest.TestCase):
             ("No materials needed for this task.", "follow_up_owner", "Sam"),
             ("No parts required.", "follow_up_owner", "Sam"),
             ("Materials ordered but not received yet.", "request_eta", "Sam"),
+            ("Warehouse shipment was delayed but has now arrived.", "follow_up_owner", "Sam"),
+            ("No longer waiting for materials from the warehouse.", "follow_up_owner", "Sam"),
+            ("Materials delivered, waiting on splicing crew.", "follow_up_owner", "Sam"),
+            ("Delayed until Oct-25 due to rain.", "follow_up_owner", "Sam"),
             ("Permit received, but still waiting on conduit delivery from warehouse.", "request_eta", "warehouse"),
             ("Vendor shipment delayed; warehouse not involved.", "request_eta", "Sam"),
             ("Warehouse delivered the cable; waiting for city permit.", "escalate", "coordination_queue"),

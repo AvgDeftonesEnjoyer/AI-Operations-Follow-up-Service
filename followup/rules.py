@@ -10,12 +10,6 @@ ESCALATE_AFTER_DAYS = 3  # Days the owner has to answer a follow-up before escal
 COORDINATION_QUEUE = "coordination_queue"  # A role, not an invented person.
 
 
-def about(task: Task) -> str:
-    """Task ID, title and project, so the recipient needs no other context."""
-    text = f"{task.task_id} '{task.title}'"
-    return f"{text} ({task.project})" if task.project else text
-
-
 def needs_attention(task: Task, today: date) -> bool:
     """A dependency in the notes matters only once the task is Blocked or overdue."""
     return task.status == "Blocked" or today > task.due_date
@@ -32,7 +26,7 @@ def decide(task: Task, today: date, blocker: str = "none",
         return Action(task.task_id, "no_action", None, "Task is completed", None)
 
     if not task.owner:
-        message = f"{about(task)} has no owner. Please assign one."
+        message = f"{task.heading} has no owner. Please assign one."
         reason = "Missing task owner"
         if not task.due_date:
             message += " Please also confirm its due date."
@@ -43,26 +37,31 @@ def decide(task: Task, today: date, blocker: str = "none",
         issue = "Invalid due date" if task.due_raw else "Missing due date"
         return Action(
             task.task_id, "clarify", task.owner, issue,
-            f"{about(task)} has no valid due date. Please confirm it.",
+            f"{task.heading} has no valid due date. Please confirm it.",
         )
 
     if task.status == "Unknown":
         return Action(
             task.task_id, "clarify", task.owner, "Unrecognized task status",
-            f"{about(task)} has an unrecognized status. Please confirm its current status.",
+            f"{task.heading} has an unrecognized status. Please confirm its current status.",
         )
 
     due = task.due_date.isoformat()
     overdue = today > task.due_date
+    # Owner-facing text changes once the deadline passes, so the owner is asked again then
+    # and the escalation clock starts from that question.
+    when = f"overdue since {due}" if overdue else f"due {due}"
 
     # The owner was asked after the deadline and the task is still overdue days later:
-    # coordination steps in, whatever the notes say now.
-    if overdue and owner_asked_on and (today - owner_asked_on).days >= ESCALATE_AFTER_DAYS:
+    # coordination steps in, whatever the notes say now. An upstream wait already went to
+    # coordination (below), so it is not escalated a second time.
+    if (overdue and owner_asked_on and blocker != "upstream"
+            and (today - owner_asked_on).days >= ESCALATE_AFTER_DAYS):
         asked = owner_asked_on.isoformat()
         return Action(
             task.task_id, "escalate", COORDINATION_QUEUE,
             f"Overdue since {due}; owner asked on {asked}",
-            f"{about(task)} has been overdue since {due} (owner: {task.owner}); the owner was "
+            f"{task.heading} has been overdue since {due} (owner: {task.owner}); the owner was "
             f"asked on {asked}. Please agree a recovery plan and ETA with the owner.",
         )
 
@@ -71,30 +70,28 @@ def decide(task: Task, today: date, blocker: str = "none",
         target = "warehouse" if warehouse_dependency(task.notes) else task.owner
         return Action(
             task.task_id, "request_eta", target, "Materials dependency",
-            f"{about(task)} is waiting for materials (due {due}). Please confirm the delivery ETA.",
+            f"{task.heading} is waiting for materials ({when}). Please confirm the delivery ETA.",
         )
 
     if blocker == "upstream" and needs_attention(task, today):
         # The owner cannot unblock work that waits on another team: coordination can.
         return Action(
             task.task_id, "escalate", COORDINATION_QUEUE, "Upstream dependency",
-            f"{about(task)} is blocked (owner: {task.owner}, due {due}). "
+            f"{task.heading} is blocked (owner: {task.owner}, due {due}). "
             "Please help unblock it and agree an ETA with the owner.",
         )
 
     if task.status == "Blocked":
-        # Blocked with no known cause: ask the owner rather than escalate a guess. The text
-        # changes once the deadline passes, so the owner is asked again then.
-        when = f"overdue since {due}" if overdue else f"due {due}"
+        # Blocked with no known cause: ask the owner rather than escalate a guess.
         return Action(
             task.task_id, "follow_up_owner", task.owner, "Blocked without a known cause",
-            f"{about(task)} is marked Blocked ({when}). Please say what is blocking it and give an ETA.",
+            f"{task.heading} is marked Blocked ({when}). Please say what is blocking it and give an ETA.",
         )
 
     if overdue:
         return Action(
             task.task_id, "follow_up_owner", task.owner, f"Overdue since {due}",
-            f"{about(task)} was due on {due}. Please share the status and an updated ETA.",
+            f"{task.heading} was due on {due}. Please share the status and an updated ETA.",
         )
 
     return Action(task.task_id, "no_action", None, "No action required", None)

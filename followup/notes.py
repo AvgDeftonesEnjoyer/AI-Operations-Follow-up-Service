@@ -19,12 +19,13 @@ WAITING = re.compile(
     r"no (?:materials?|supplies|parts|equipment|cable|conduit))\b"
     r"|(?:\bnot|\bnever|\bnothing|n't) (?:yet )?(?:been )?(?:deliver|ship|receiv|arriv)\w*"
 )
-# Only a wait on upstream work, a permit, or another task ("blocked by TC-1008") goes past
-# the owner to coordination.
-UPSTREAM = re.compile(r"\b(upstream|permit|[a-z]{2,}-\d+)\b")
+NOT_RECEIVED = re.compile(r"(?:\bnot|\bnever|\bnothing|n't) (?:yet )?(?:been )?(?:deliver|ship|receiv|arriv)\w*")
+# Only a wait on upstream work, a permit, or another task ("blocked by TC-1008": letters, a
+# dash, three or more digits; "Oct-25" is a date) goes past the owner to coordination.
+UPSTREAM = re.compile(r"\b(upstream|permit|[a-z]{2,5}-\d{3,})\b")
 # "No backorder", "not delayed", "no materials issues": a negated blocker is not a blocker.
 NEGATED = re.compile(
-    r"\b(?:no|not|nothing|never) (?:await\w*|waiting|pending|delay\w*|backorder\w*|out of stock|"
+    r"\b(?:no longer|no|not|nothing|never) (?:await\w*|waiting|pending|delay\w*|backorder\w*|out of stock|"
     r"blocked (?:by|on)|dependent on|upstream|late|missing)\b"
     r"|\bno (?:\w+ )?(?:shortage|missing|issues?|problems?|concerns?|needed|required)\b"
 )
@@ -33,7 +34,7 @@ RESOLVED = re.compile(r"\b(resolved|received|arrived|delivered|completed|approve
 STILL_PENDING = re.compile(r"\b(no(?! longer)|not|never|nothing|until|yet|await\w*|waiting|pending)\b|n't")
 # "..., now resolved", "they arrived today": the update refers to the blocker just mentioned.
 BARE_RESOLUTION = re.compile(
-    r"\s*(?:(?:it|this|that|they|these|those) (?:is |are |was |were |has |have )?(?:been )?)?"
+    r"\s*(?:(?:it|this|that|they|these|those) )?(?:is |are |was |were |has |have )?(?:been )?"
     r"(?:now |all )?(?:resolved|cleared|arrived|received|delivered)(?: today| yesterday)?\s*"
 )
 # "If a backorder occurs" or "could become a problem" is not a blocker yet; "if possible" is courtesy.
@@ -69,8 +70,8 @@ def active_blockers(notes: str):
         if HYPOTHETICAL.search(clause):
             continue
         kind = blocker_kind(clause)
-        if kind is None and WAITING.search(clause) and not is_resolved(clause):
-            # "Materials ordered, but not received yet": the wait refers to the item just named.
+        if kind is None and NOT_RECEIVED.search(clause) and not is_resolved(previous):
+            # "Materials ordered, but not received yet": it refers to the item just named.
             kind = blocker_kind(f"{previous} {clause}")
         previous = clause
         if kind:

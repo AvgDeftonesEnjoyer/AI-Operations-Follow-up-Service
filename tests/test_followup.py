@@ -67,7 +67,8 @@ class ServiceTests(unittest.TestCase):
         # Each message names the task and project, so the recipient needs no other context.
         warehouse = next(r for r in results if r["task_id"] == "TC-1002")
         self.assertEqual(warehouse["message"], "TC-1002 'Install handholes' (SURF Illinois) is waiting "
-                                               "for materials (due 2026-10-18). Please confirm the delivery ETA.")
+                                               "for materials (overdue since 2026-10-18). Please confirm the "
+                                               "delivery ETA.")
 
     def test_events_also_go_to_the_application_log(self):
         with self.assertLogs("followup.store", "WARNING") as logs:
