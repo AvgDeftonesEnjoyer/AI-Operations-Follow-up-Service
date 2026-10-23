@@ -46,6 +46,8 @@ The CLI exits with code `1` when any delivery fails, after writing both reports.
 
 Both reports include the same `run` ID, start/finish timestamps, status, and error category. An ingestion or setup failure after opening the database writes a failed run with an empty decisions list, so old successful reports are not mistaken for current results. Existing delivery receipts remain in the audit report. Database/output filesystem failures can still prevent reports from being written and produce a nonzero exit.
 
+The CLI collects `Service.iter_results()` one decision at a time. If a later task fails unexpectedly, the report keeps the completed decisions and marks the run failed. `Service.run()` remains a list-returning convenience method. Input validation still finishes for the entire fixture before the first delivery. A crash between a delivery commit and its yielded result can leave that current action out of the report; the durable receipt remains the source of truth for reconciliation.
+
 ## Optional real LLM
 
 The default is a deterministic local interpreter: no API key, network request, or cost.
@@ -59,6 +61,8 @@ python main.py --llm claude --db .data/claude_demo.sqlite
 `ClaudeInterpreter` calls the Claude Messages API to **classify non-empty notes**, not to change task facts or send messages. It uses a small JSON Schema (`output_config.format`) to restrict output to a single blocker category. It accepts only `{"blocker_type":"none|materials|upstream"}` (one of these three exact values). Extra fields, invalid JSON, errors, or unsupported values trigger a safe deterministic fallback. Instructions inside task notes are treated as untrusted text. Message text is always assembled by Python from verified task fields, not copied from LLM output. The built-in HTTP client uses only Python standard libraries; Claude Code CLI is not needed.
 
 The `.env.example` file lists the environment variable names; the app does not automatically load `.env` files. Export the values in your shell before running. Check `.data/delivery_log.json` for `llm_fallback` events if Claude is unavailable or returns an unusable response. Live API calls may cost money. The automated tests mock the network and do not require an API key.
+
+Fallback events include a safe reason such as `timeout`, `http_401`, `invalid_json`, `invalid_schema`, or `truncated_output`. `interpret_safely()` returns `(category, reason)`, with `reason=None` on success. Unknown failures use `provider_error`; raw exception messages and provider response bodies are never copied into these audit events.
 
 Sonnet 5.5 is the default for `--llm claude`. Set `ANTHROPIC_MODEL=claude-opus-5-5` to use Opus instead. Model selection does not change the business rules or validation. The default CLI mode is still the offline stub; selecting a model does not enable network calls by itself. Cached classifications are reused even when the model changes, so compare models using separate demo databases. No live quality comparison between these models has been run for this project.
 
@@ -98,7 +102,9 @@ The 7-day escalation threshold and `coordination_queue` are explicit demo assump
 
 `followup/notes.py` holds the small phrase rules shared by the offline interpreter and warehouse routing. A valid model classification is used as returned; phrase matching is the fallback, not an override. Hypothetical or resolved clauses are skipped, and “no update” or “no ETA” does not negate an active blocker. Merely mentioning warehouse does not select it as the recipient.
 
-The offline rules examine all active clauses before selecting upstream; materials take priority regardless of sentence order. Commas and “but/however” separate clauses, while a leading conditional applies to its whole sentence. A polite “could you” is not treated as a hypothetical dependency. Warehouse routing requires a recognized direct phrase such as “awaiting materials from warehouse” or “warehouse confirmed backorder”; otherwise the known owner receives the ETA request. These are deliberately small English phrase rules, not a general language parser.
+The offline rules collect blocker mentions before deciding whether they remain active. A named resolution updates earlier mentions of that category; an unnamed “now resolved” updates the latest mention. A new dependency after “but” can still be active. Both leading and trailing conditions are recognized, while “no ETA”, “not yet resolved”, and polite “could you” requests do not resolve a blocker. Materials take priority over upstream dependencies regardless of sentence order. Warehouse routing uses only active mentions with a direct phrase such as “awaiting materials from warehouse” or “warehouse confirmed backorder”; otherwise the known owner receives the ETA request.
+
+These are deliberately small English phrase rules, not a general language parser. A category-wide resolution cannot distinguish multiple independent material dependencies without structured dependency IDs. For richer or ambiguous notes, use the LLM adapter; its classification still needs evaluation on representative data. Changing the model alone does not refresh classifications already cached in an existing database.
 
 Existing databases keep their cached classifications and delivery history. To evaluate changed note rules from scratch, use a separate demo database; do not delete operational delivery history to force reclassification. Changing routing rules can change the action target and therefore its operation ID, so review previously processed tasks before applying rule changes to an existing operational database.
 

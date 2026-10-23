@@ -69,7 +69,9 @@ def main():
             reader = TaskAPI(args.fixture, read_failures)
             sender = DeliveryAPI(store, send_failures, args.timeout_after_commit_once)
             ai = ClaudeInterpreter() if args.llm == "claude" else StubAI()
-            decisions = Service(reader, sender, store, ai, today).run()
+            service = Service(reader, sender, store, ai, today)
+            for decision in service.iter_results():
+                decisions.append(decision)
             if any(row["delivery_status"] == "failed" for row in decisions):
                 run.update(status="failed", error="Delivery failure")
         except Exception as exc:
