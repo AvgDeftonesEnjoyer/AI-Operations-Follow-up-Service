@@ -211,7 +211,8 @@ class FallbackReasonTests(unittest.TestCase):
                     AIError("private-provider-detail", "private-provider-detail"),
                     RuntimeError("private-provider-detail"),
                 ]):
-                    fixture.write_text(json.dumps([{**ROW, "task_id": str(index), "notes": "Warehouse backorder"}]))
+                    # Blocked, so the label matters and the model is asked.
+                    fixture.write_text(json.dumps([{**BLOCKED, "task_id": str(index), "notes": "Warehouse backorder"}]))
                     ai = Mock(interpret=Mock(side_effect=failure))
                     Service(TaskAPI(str(fixture)), DeliveryAPI(store), store, ai, TODAY).run()
                 events = [event for event in store.events() if event["event"] == "llm_fallback"]

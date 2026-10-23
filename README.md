@@ -62,12 +62,12 @@ export ANTHROPIC_MODEL="claude-sonnet-5-5"     # optional; this is the default
 python main.py --llm claude --db .data/claude_demo.sqlite
 ```
 
-`ClaudeInterpreter` (`followup/ai.py`) calls the Claude Messages API to **classify non-empty notes** — nothing else:
+`ClaudeInterpreter` (`followup/ai.py`) calls the Claude Messages API to **classify non-empty notes** — nothing else — and only when the label can change the action (the task is `Blocked` or overdue, with owner and due date known), so on-time tasks cost nothing:
 
 - **Structured output:** a JSON Schema (`output_config.format`) allows only `{"blocker_type": "none" | "materials" | "upstream"}`. The answer is validated again locally; extra fields, invalid JSON, refusals, truncated output, or unexpected content blocks trigger the deterministic fallback. Thinking blocks are ignored.
 - **The model cannot change facts or actions.** Owners, dates, status, recipients, and message text come from Python, never from the model. Notes are sent as untrusted data, and the system prompt says to ignore instructions inside them.
 - **Errors:** 429/5xx, timeouts, and network errors get one retry after 1 second, then the fallback; if that retry fails too, Claude is skipped for the rest of the run (`provider_unavailable`) instead of being called for every note. Configuration errors — 400 (bad request), 401/403 (rejected key), 404 (unknown model) — stop the run: every call would fail the same way, so silently running on the fallback would hide the problem. Each fallback is logged as `llm_fallback` with a short reason from a fixed list (`http_<status>`, `timeout`, `network_error`, `invalid_json`, `invalid_schema`, `truncated_output`, `refusal`, `unexpected_stop`, `unsupported_content`, `response_too_large`, `provider_unavailable`, `provider_error`); provider messages and keys are never logged.
-- **Visible degradation and cost:** the run report stores `llm_fallbacks` (notes the model could not classify) and `llm_usage` (calls and token totals); the CLI prints a warning when any fallback happened.
+- **Visible degradation and cost:** the run report stores `llm_fallbacks` (notes the model could not classify) and `llm_usage` (calls and token totals); the CLI prints a warning when any fallback happened. A missing or malformed key (spaces, control characters) fails before the run starts; surrounding whitespace is trimmed.
 - **Hardening:** redirects are refused (the key never leaves api.anthropic.com), and responses are capped at 64 KiB.
 
 Only notes are sent to Anthropic, but notes can contain sensitive information: `--llm claude` is an explicit external-data boundary. The tests mock the network and need no key. The app does not load `.env`; `.env.example` only lists the variable names.
@@ -105,7 +105,7 @@ The owner is asked first, except for work waiting on another team, which the own
 A valid model classification is used as returned; without one, `followup/notes.py` judges each clause of the note (split at punctuation, `and`, `but`) with small English keyword lists. When in doubt the answer is `none`, so the owner gets the reminder:
 
 - a blocker word (`awaiting`, `pending`, `blocked by`, `held up`, `backorder`, `short on`, `missing`, `delayed`, `late`, `ran out`, `ETA unknown`, `haven't received`…) next to a materials word (`materials`, `supplies`, `parts`, `cable`, `delivery`, `supplier`, `warehouse`…) means `materials` — so the spec's "blocked by materials" asks for an ETA;
-- only an explicit dependency on other work (`upstream`, `permit`, `dependent on`, `unable to proceed until`) means `upstream`; a bare "pending", "waiting" or "blocked by weather" does not, so those go to the owner, not past them;
+- a blocker word next to `upstream` or `permit` means `upstream` ("unable to proceed until upstream splice confirmed", "waiting on city permit"); anything else — a bare "pending", "blocked by weather", or "permit issued" with no wait — goes to the owner, not past them;
 - negated (`no backorder`, `not delayed`) and hypothetical (`if a backorder occurs`, `could become a problem`) clauses do not count;
 - a resolution (`resolved`, `delivered`, `completed`…) does not count when the same clause says it has not happened yet (`not yet received`); a later update closes the blocker it talks about: "all materials have arrived" closes materials blockers, "permit completed" closes the permit wait, a bare "now resolved" closes the last one, and "safety training completed" closes nothing;
 - the warehouse is asked only when a still-active materials clause names it.
@@ -114,11 +114,11 @@ These are deliberately small rules, not a language parser; richer notes are the 
 
 ### Why repeated runs are safe
 
-- **Stable operation ID.** `Task.fingerprint()` hashes the normalized task state with the decision and target. The mock delivery server stores it as a unique SQLite key, so the same task/action/state is delivered once.
+- **Stable operation ID.** `Task.fingerprint()` hashes the normalized task state (every field except `last_update`, so touching a record without changing it does not resend) with the decision and target. The mock delivery server stores it as a unique SQLite key, so the same task/action/state is delivered once.
 - **Reconciliation.** The service looks the receipt up **before** sending and again after any timeout or error. When the server committed a delivery but the response was lost, the lookup finds it and no second send happens.
-- **Pinned classification.** The model's label is stored per task state, so a model that answers differently on the next run cannot change the action and its operation ID. A fallback label is pinned only when an action rests on it; if it led to no action, the model gets another try next run. Date rules are recomputed, so a reminder can later become an escalation.
+- **Pinned classification.** The label (from the model or the fallback) is stored per task state, so a model that answers differently on the next run cannot change the action and its operation ID. Because the model is asked only when its label leads to an action, nothing is pinned for tasks that need none. Date rules are recomputed, so a reminder can later become an escalation.
 - **Honest reports.** Messages have no day counts, so an `already_sent` row shows exactly the text that was delivered.
-- **Concurrency.** Receipts and labels use `INSERT OR IGNORE`; a worker that loses the race reports `already_sent`. A worker acting on a fallback label pins it first and follows any label another worker pinned before it, so one task state never gets two different messages.
+- **Concurrency.** Receipts and labels use `INSERT OR IGNORE`: the first stored label wins for every worker, so one task state never gets two different messages, and a worker that loses a delivery race reports `already_sent`.
 - **Partial batches.** Each decision is reported as soon as it is final, so a mid-batch failure — or Ctrl+C — keeps finished results in both reports. A crash after a committed send is reported as `already_sent` on the next run.
 
 ### Input validation

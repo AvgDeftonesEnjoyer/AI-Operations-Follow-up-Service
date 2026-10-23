@@ -140,15 +140,25 @@ class RegressionTests(unittest.TestCase):
         result = self.run_service(Mock(interpret=Mock(side_effect=slow_failing_model)))[0]
         self.assertEqual(result["decision"], "request_eta")  # Not a second, different action.
 
-    def test_fallback_label_is_not_pinned_when_no_action_was_taken(self):
-        # On time and not blocked: the fallback label leads to no action, so nothing is pinned
-        # and the recovered model is asked again on the next run.
-        self.fixture.write_text(json.dumps([{**ROW, "due_date": "2026-10-30",
-                                             "notes": "Awaiting materials"}]))
-        ai = Mock(interpret=Mock(side_effect=[AIError("down", "timeout"), "none"]))
+    def test_model_is_asked_only_when_its_answer_can_change_the_action(self):
+        ai = Mock(interpret=Mock(return_value="materials"))
+        # On time and not blocked: no action whatever the notes say, so no model cost.
+        self.fixture.write_text(json.dumps([{**ROW, "due_date": "2026-10-30", "notes": "Awaiting materials"}]))
         self.assertEqual(self.run_service(ai)[0]["decision"], "no_action")
+        self.assertEqual(ai.interpret.call_count, 0)
+        # Overdue: the label decides between a reminder and an ETA request.
+        self.fixture.write_text(json.dumps([{**ROW, "notes": "Awaiting materials"}]))
+        self.assertEqual(self.run_service(ai)[0]["decision"], "request_eta")
+        self.assertEqual(ai.interpret.call_count, 1)
+
+    def test_touching_last_update_alone_does_not_resend(self):
+        self.fixture.write_text(json.dumps([{**ROW, "notes": "Awaiting materials from warehouse"}]))
+        ai = Mock(interpret=Mock(return_value="materials"))
         self.run_service(ai)
-        self.assertEqual(ai.interpret.call_count, 2)
+        self.fixture.write_text(json.dumps([{**ROW, "notes": "Awaiting materials from warehouse",
+                                             "last_update": "2026-10-22"}]))
+        self.assertEqual(self.run_service(ai, date(2026, 10, 22))[0]["delivery_status"], "already_sent")
+        self.assertEqual(len(self.store.deliveries()), 1)
 
     def test_already_sent_reports_what_was_actually_delivered(self):
         ai = Mock(interpret=Mock(return_value="none"))
@@ -248,6 +258,14 @@ class RegressionTests(unittest.TestCase):
             ("Materials ETA unknown.", "request_eta", "Sam"),
             ("Blocked by weather.", "follow_up_owner", "Sam"),
             ("No need for extra parts.", "follow_up_owner", "Sam"),
+            # "Upstream" or "permit" alone is not a wait: no escalation past the owner.
+            ("Upstream splice confirmed, testing underway.", "follow_up_owner", "Sam"),
+            ("Not dependent on upstream work.", "follow_up_owner", "Sam"),
+            ("No permit required.", "follow_up_owner", "Sam"),
+            ("Depends on weather.", "follow_up_owner", "Sam"),
+            ("Dependent on upstream splice.", "escalate", "coordination_queue"),
+            ("Awaiting delivery of approved materials from warehouse.", "request_eta", "warehouse"),
+            ("Delivery date unknown.", "request_eta", "Sam"),
             ("Backorder resolved.", "follow_up_owner", "Sam"),
             ("No material shortage.", "follow_up_owner", "Sam"),
             ("No backorder, parts on site.", "follow_up_owner", "Sam"),

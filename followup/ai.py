@@ -59,10 +59,11 @@ class ClaudeInterpreter:
     """Minimal Claude Messages API client; no extra Python packages needed."""
 
     def __init__(self, api_key: str | None = None, model: str | None = None):
-        self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+        self.api_key = (api_key or os.environ.get("ANTHROPIC_API_KEY", "")).strip()
         self.model = model or os.environ.get("ANTHROPIC_MODEL") or "claude-sonnet-5-5"
-        if not self.api_key:
-            raise ValueError("ANTHROPIC_API_KEY is required with --llm claude")
+        # A key with spaces or control characters can never work: fail before the run starts.
+        if not re.fullmatch(r"[\x21-\x7e]+", self.api_key):
+            raise ValueError("ANTHROPIC_API_KEY is required with --llm claude and must be a single token")
         self.http = request.build_opener(NoRedirects())
         # Token totals for the run report: the cost signal.
         self.usage = {"calls": 0, "input_tokens": 0, "output_tokens": 0}

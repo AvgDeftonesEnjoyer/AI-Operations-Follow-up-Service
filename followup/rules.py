@@ -82,12 +82,11 @@ def decide(task: Task, today: date, blocker: str = "none",
         quiet_since = updated if replied else owner_asked_on
         if (today - quiet_since).days >= ESCALATE_AFTER_DAYS:
             asked = owner_asked_on.isoformat()
-            answer = f" and last updated it on {updated.isoformat()}" if replied else ""
             return Action(
                 task.task_id, "escalate", COORDINATION_QUEUE,
                 f"Overdue since {due}; owner asked on {asked}",
                 f"{about(task)} has been overdue since {due} (owner: {task.owner}); the owner was "
-                f"asked on {asked}{answer}. Please agree a recovery plan and ETA with the owner.",
+                f"asked on {asked}. Please agree a recovery plan and ETA with the owner.",
             )
         if replied:
             return Action(task.task_id, "no_action", None,

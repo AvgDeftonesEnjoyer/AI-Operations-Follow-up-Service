@@ -1,161 +1,161 @@
 {
   "run": {
-    "id": "6d668f2a6f214ea5823596d58db55172",
-    "started_at": "2026-10-23T17:11:51+00:00",
+    "id": "42e04c0af85f43ce975182a3f17a28ce",
+    "started_at": "2026-10-23T17:27:35+00:00",
     "status": "completed",
     "error": null,
-    "finished_at": "2026-10-23T17:11:51+00:00",
+    "finished_at": "2026-10-23T17:27:35+00:00",
     "llm_usage": null,
     "llm_fallbacks": 0
   },
   "deliveries": [
     {
-      "operation_id": "c70bcbb14ccad1343091ae72",
+      "operation_id": "82f28a840be418a489b4d04f",
       "action": {
         "task_id": "TC-1001",
         "decision": "follow_up_owner",
         "target": "John Smith",
         "reason": "Overdue since 2026-10-18",
         "message": "TC-1001 'Fiber splicing' (SURF Illinois) was due on 2026-10-18. Please share the status and an updated ETA.",
-        "operation_id": "c70bcbb14ccad1343091ae72",
+        "operation_id": "82f28a840be418a489b4d04f",
         "as_of": "2026-10-21",
         "due_date": "2026-10-18"
       },
-      "delivered_at": "2026-10-23T17:11:51+00:00"
+      "delivered_at": "2026-10-23T17:27:35+00:00"
     },
     {
-      "operation_id": "cd316ea541040a9aaa025578",
+      "operation_id": "af47808f2dfbf74ceeb88cf7",
       "action": {
         "task_id": "TC-1002",
         "decision": "request_eta",
         "target": "warehouse",
         "reason": "Materials dependency",
         "message": "TC-1002 'Install handholes' (SURF Illinois) is waiting for materials (due 2026-10-18). Please confirm the delivery ETA.",
-        "operation_id": "cd316ea541040a9aaa025578",
+        "operation_id": "af47808f2dfbf74ceeb88cf7",
         "as_of": "2026-10-21",
         "due_date": "2026-10-18"
       },
-      "delivered_at": "2026-10-23T17:11:51+00:00"
+      "delivered_at": "2026-10-23T17:27:35+00:00"
     },
     {
-      "operation_id": "075d629cd2a1a62ae794702d",
+      "operation_id": "1bcb8a72219b4de958f6ccee",
       "action": {
         "task_id": "TC-1004",
         "decision": "clarify",
         "target": "coordination_queue",
         "reason": "Missing task owner",
         "message": "TC-1004 'Permit review' (Wisconsin Build) has no owner. Please assign one.",
-        "operation_id": "075d629cd2a1a62ae794702d",
+        "operation_id": "1bcb8a72219b4de958f6ccee",
         "as_of": "2026-10-21",
         "due_date": "2026-10-25"
       },
-      "delivered_at": "2026-10-23T17:11:51+00:00"
+      "delivered_at": "2026-10-23T17:27:35+00:00"
     },
     {
-      "operation_id": "573e364906b808443578e5b6",
+      "operation_id": "07a9e0ae0480b795eb6229a2",
       "action": {
         "task_id": "TC-1005",
         "decision": "clarify",
         "target": "Alex Brown",
         "reason": "Missing due date",
         "message": "TC-1005 'As-built drawings' (Indiana OSP) has no valid due date. Please confirm it.",
-        "operation_id": "573e364906b808443578e5b6",
+        "operation_id": "07a9e0ae0480b795eb6229a2",
         "as_of": "2026-10-21",
         "due_date": null
       },
-      "delivered_at": "2026-10-23T17:11:51+00:00"
+      "delivered_at": "2026-10-23T17:27:35+00:00"
     },
     {
-      "operation_id": "1d1b364ca7e1d269eb5e6111",
+      "operation_id": "08afea9379d3a20f3cc4d33b",
       "action": {
         "task_id": "TC-1006",
         "decision": "follow_up_owner",
         "target": "Jamie Lee",
         "reason": "Overdue since 2026-10-20",
         "message": "TC-1006 'Splice verification' (Minnesota Fiber) was due on 2026-10-20. Please share the status and an updated ETA.",
-        "operation_id": "1d1b364ca7e1d269eb5e6111",
+        "operation_id": "08afea9379d3a20f3cc4d33b",
         "as_of": "2026-10-21",
         "due_date": "2026-10-20"
       },
-      "delivered_at": "2026-10-23T17:11:51+00:00"
+      "delivered_at": "2026-10-23T17:27:35+00:00"
     },
     {
-      "operation_id": "e28a987cb0f7bf182e172e0b",
+      "operation_id": "e97f490d835ae301f7285ff7",
       "action": {
         "task_id": "TC-1008",
         "decision": "escalate",
         "target": "coordination_queue",
         "reason": "Upstream dependency",
         "message": "TC-1008 'Test fiber signal' (SURF Illinois) is blocked (owner: Chris Patel, due 2026-10-15). Please help unblock it and agree an ETA with the owner.",
-        "operation_id": "e28a987cb0f7bf182e172e0b",
+        "operation_id": "e97f490d835ae301f7285ff7",
         "as_of": "2026-10-21",
         "due_date": "2026-10-15"
       },
-      "delivered_at": "2026-10-23T17:11:51+00:00"
+      "delivered_at": "2026-10-23T17:27:35+00:00"
     },
     {
-      "operation_id": "662d9f2f1aebbd31b5ee4664",
+      "operation_id": "1a72747434d8cb8d8291e354",
       "action": {
         "task_id": "TC-1009",
         "decision": "request_eta",
         "target": "warehouse",
         "reason": "Materials dependency",
         "message": "TC-1009 'Material reconciliation' (Michigan Expansion) is waiting for materials (due 2026-10-21). Please confirm the delivery ETA.",
-        "operation_id": "662d9f2f1aebbd31b5ee4664",
+        "operation_id": "1a72747434d8cb8d8291e354",
         "as_of": "2026-10-21",
         "due_date": "2026-10-21"
       },
-      "delivered_at": "2026-10-23T17:11:51+00:00"
+      "delivered_at": "2026-10-23T17:27:35+00:00"
     }
   ],
   "events": [
     {
-      "timestamp": "2026-10-23T17:11:51+00:00",
-      "operation_id": "c70bcbb14ccad1343091ae72",
+      "timestamp": "2026-10-23T17:27:35+00:00",
+      "operation_id": "82f28a840be418a489b4d04f",
       "event": "sent",
       "detail": ""
     },
     {
-      "timestamp": "2026-10-23T17:11:51+00:00",
-      "operation_id": "cd316ea541040a9aaa025578",
+      "timestamp": "2026-10-23T17:27:35+00:00",
+      "operation_id": "af47808f2dfbf74ceeb88cf7",
       "event": "sent",
       "detail": ""
     },
     {
-      "timestamp": "2026-10-23T17:11:51+00:00",
-      "operation_id": "075d629cd2a1a62ae794702d",
+      "timestamp": "2026-10-23T17:27:35+00:00",
+      "operation_id": "1bcb8a72219b4de958f6ccee",
       "event": "sent",
       "detail": ""
     },
     {
-      "timestamp": "2026-10-23T17:11:51+00:00",
-      "operation_id": "573e364906b808443578e5b6",
+      "timestamp": "2026-10-23T17:27:35+00:00",
+      "operation_id": "07a9e0ae0480b795eb6229a2",
       "event": "sent",
       "detail": ""
     },
     {
-      "timestamp": "2026-10-23T17:11:51+00:00",
-      "operation_id": "1d1b364ca7e1d269eb5e6111",
+      "timestamp": "2026-10-23T17:27:35+00:00",
+      "operation_id": "08afea9379d3a20f3cc4d33b",
       "event": "sent",
       "detail": ""
     },
     {
-      "timestamp": "2026-10-23T17:11:51+00:00",
-      "operation_id": "e28a987cb0f7bf182e172e0b",
+      "timestamp": "2026-10-23T17:27:35+00:00",
+      "operation_id": "e97f490d835ae301f7285ff7",
       "event": "sent",
       "detail": ""
     },
     {
-      "timestamp": "2026-10-23T17:11:51+00:00",
-      "operation_id": "662d9f2f1aebbd31b5ee4664",
+      "timestamp": "2026-10-23T17:27:35+00:00",
+      "operation_id": "1a72747434d8cb8d8291e354",
       "event": "sent",
       "detail": ""
     },
     {
-      "timestamp": "2026-10-23T17:11:51+00:00",
+      "timestamp": "2026-10-23T17:27:35+00:00",
       "operation_id": null,
       "event": "run_completed",
-      "detail": "Run 6d668f2a6f214ea5823596d58db55172: OK"
+      "detail": "Run 42e04c0af85f43ce975182a3f17a28ce: OK"
     }
   ]
 }

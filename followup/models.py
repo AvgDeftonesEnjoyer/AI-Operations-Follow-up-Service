@@ -95,7 +95,10 @@ class Task:
         )
 
     def fingerprint(self, decision, target):
-        """Same task + same state + same action always gets the same ID."""
+        """Same task + same state + same action always gets the same ID.
+
+        last_update is left out: touching a record without changing it must not resend.
+        """
         state = {
             "task_id": self.task_id,
             "project": self.project,
@@ -103,7 +106,6 @@ class Task:
             "owner": self.owner,
             "due_date": self.due_raw,
             "status": self.status,
-            "last_update": self.last_update,
             "notes": self.notes,
             "decision": decision,
             "target": target,

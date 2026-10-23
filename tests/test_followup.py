@@ -80,8 +80,8 @@ class ServiceTests(unittest.TestCase):
                 raise AIError("Claude request failed: timeout", "timeout")
         service = Service(TaskAPI(str(FIXTURE)), DeliveryAPI(self.store), self.store, DownModel(), TODAY)
         service.run()
-        # Six tasks have an owner, a due date, an open status and notes.
-        self.assertEqual(service.fallbacks, 6)
+        # Five tasks are Blocked or overdue and have notes; TC-1007 is on time, so no model call.
+        self.assertEqual(service.fallbacks, 5)
 
     def test_second_run_does_not_send_again(self):
         self.run_fixture()
@@ -406,6 +406,11 @@ class AITests(unittest.TestCase):
             result = interpret_safely(ClaudeInterpreter(api_key="test-key"),
                                       "Warehouse backorder")
         self.assertEqual(result, ("materials", "http_429"))
+
+    def test_api_key_is_trimmed_and_a_malformed_key_fails_at_start(self):
+        self.assertEqual(ClaudeInterpreter(api_key=" sk-ant-test\n").api_key, "sk-ant-test")
+        with self.assertRaisesRegex(ValueError, "ANTHROPIC_API_KEY"):
+            ClaudeInterpreter(api_key="sk-ant test")
 
     def test_claude_requires_an_api_key(self):
         with patch.dict("os.environ", {"ANTHROPIC_API_KEY": ""}):
