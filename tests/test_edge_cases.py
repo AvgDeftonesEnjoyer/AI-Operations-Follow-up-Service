@@ -149,6 +149,27 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(later["decision"], "escalate")
         self.assertEqual(len(self.store.deliveries()), 2)
 
+    def test_the_same_text_to_the_same_recipient_is_never_sent_twice(self):
+        # The warehouse request does not mention the owner; the "no owner" request does not
+        # mention the deadline. Changing those fields must not resend identical text.
+        materials = {**ROW, "status": "Blocked", "notes": "Awaiting materials from warehouse"}
+        unowned = {**ROW, "task_id": "B", "assigned_to": None}
+        self.fixture.write_text(json.dumps([materials, unowned]))
+        self.run_service(Mock())
+        self.fixture.write_text(json.dumps([{**materials, "assigned_to": "Mary"},
+                                            {**unowned, "due_date": "2026-11-30"}]))
+        again = self.run_service(Mock(), date(2026, 10, 22))
+        self.assertEqual([r["delivery_status"] for r in again], ["already_sent", "already_sent"])
+        self.assertEqual(len(self.store.deliveries()), 2)
+
+    def test_a_question_before_the_deadline_does_not_start_the_escalation_clock(self):
+        task = {**ROW, "status": "Blocked", "due_date": "2026-10-25", "notes": ""}
+        self.fixture.write_text(json.dumps([task]))
+        self.run_service(Mock())  # Clarify on 10-21, before the deadline.
+        self.fixture.write_text(json.dumps([{**task, "status": "Working on it"}]))
+        overdue = self.run_service(Mock(), date(2026, 10, 26))[0]
+        self.assertEqual((overdue["decision"], overdue["target"]), ("follow_up_owner", "Sam"))
+
     def test_marking_an_overdue_task_blocked_does_not_stop_escalation(self):
         overdue = {**ROW, "due_date": "2026-10-10", "notes": ""}
         self.fixture.write_text(json.dumps([overdue]))
@@ -156,16 +177,19 @@ class RegressionTests(unittest.TestCase):
         self.fixture.write_text(json.dumps([{**overdue, "status": "Blocked"}]))
         self.assertEqual(self.run_service(Mock(), date(2026, 10, 24))[0]["decision"], "escalate")
 
-    def test_fallback_label_is_kept_only_once_an_action_was_delivered(self):
+    def test_fallback_label_is_pinned_so_a_recovered_model_cannot_change_the_action(self):
         self.fixture.write_text(json.dumps([{**ROW, "notes": "Awaiting materials"}]))
         down = Mock(interpret=Mock(side_effect=AIError("down", "http_529")))
         with patch("followup.service.pause"):
             first = Service(TaskAPI(str(self.fixture)), DeliveryAPI(self.store, fail_first=[503] * 3),
                             self.store, down, TODAY).run()[0]
-        self.assertEqual(first["delivery_status"], "failed")
-        healthy = Mock(interpret=Mock(return_value="materials"))
-        self.assertEqual(self.run_service(healthy)[0]["decision"], "request_eta")
-        healthy.interpret.assert_called_once()  # Nothing was delivered, so the model is asked again.
+        self.assertEqual((first["decision"], first["delivery_status"]), ("request_eta", "failed"))
+        # The model recovers and would say "none": the retry still sends the same action,
+        # so a parallel or earlier worker can never have sent a different message.
+        recovered = Mock(interpret=Mock(return_value="none"))
+        second = self.run_service(recovered)[0]
+        self.assertEqual((second["decision"], second["delivery_status"]), ("request_eta", "sent"))
+        recovered.interpret.assert_not_called()
 
     def test_touching_last_update_daily_does_not_postpone_escalation(self):
         ai = Mock(interpret=Mock(return_value="none"))
@@ -234,7 +258,7 @@ class RegressionTests(unittest.TestCase):
     def test_dates_are_strict_and_last_update_is_normalized(self):
         for value in ["20261020", "2026-W43-2", "2026-02-30", "2026-10-18Tnoon"]:
             self.assertIsNone(Task.from_dict({**ROW, "due_date": value}).due_date)
-        for value in ["2026-10-18T00:00:00Z", "2026-10-18T09:30:00+03:00"]:
+        for value in ["2026-10-18T00:00:00Z", "2026-10-18T09:30:00+03:00", "2026-10-18 09:00"]:
             self.assertEqual(Task.from_dict({**ROW, "due_date": value}).due_date, date(2026, 10, 18))
         self.assertIsNone(Task.from_dict({**ROW, "last_update": "invalid"}).last_update)
         self.assertEqual(Task.from_dict({**ROW, "last_update": " 2026-10-19 "}).last_update,
@@ -300,6 +324,12 @@ class RegressionTests(unittest.TestCase):
             ("Missing hardware.", "request_eta", "Sam"),
             ("Waiting on inventory.", "request_eta", "Sam"),
             ("Waiting for work order approval.", "follow_up_owner", "Sam"),
+            ("No materials issues, crew behind schedule.", "follow_up_owner", "Sam"),
+            ("Materials are not late.", "follow_up_owner", "Sam"),
+            ("Was waiting on materials, they arrived today.", "follow_up_owner", "Sam"),
+            ("Blocked by TC-1008 splice.", "escalate", "coordination_queue"),
+            ("Waiting on fiber.", "request_eta", "Sam"),
+            ("Waiting on fiber splicing crew.", "follow_up_owner", "Sam"),
             ("Permit received, but still waiting on conduit delivery from warehouse.", "request_eta", "warehouse"),
             ("Vendor shipment delayed; warehouse not involved.", "request_eta", "Sam"),
             ("Warehouse delivered the cable; waiting for city permit.", "escalate", "coordination_queue"),
@@ -506,7 +536,7 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(decisions["run"], log["run"])
         self.assertNotEqual(previous["id"], decisions["run"]["id"])
         self.assertEqual(decisions["run"]["status"], "failed")
-        self.assertEqual(decisions["run"]["error"], "APIError")
+        self.assertEqual(decisions["run"]["error"], "APIError: Mock API returned HTTP 503")
         self.assertEqual(decisions["decisions"], [])
         self.assertEqual(log["events"][-1]["event"], "run_failed")
         self.assertEqual(len(log["deliveries"]), 1)

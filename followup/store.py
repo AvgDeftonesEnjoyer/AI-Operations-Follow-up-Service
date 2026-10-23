@@ -99,13 +99,15 @@ class Store:
             )
 
     def owner_asked_on(self, task_id: str, owner: str | None, due_date: str | None):
-        """The date this owner was first asked about this deadline (follow-up or clarify), or None.
+        """The date this owner was first asked after this deadline passed, or None.
 
+        A follow-up or a clarification counts; a question from before the deadline does not.
         A new owner or a moved deadline starts over with a fresh question.
         """
         row = self.connection.execute(
             "SELECT MIN(as_of) FROM actions WHERE task_id = ? "
-            "AND decision IN ('follow_up_owner', 'clarify') AND target = ? AND due_date = ?",
+            "AND decision IN ('follow_up_owner', 'clarify') AND target = ? AND due_date = ? "
+            "AND as_of > due_date",
             (task_id, (owner or "").casefold(), due_date),
         ).fetchone()
         return date.fromisoformat(row[0]) if row[0] else None

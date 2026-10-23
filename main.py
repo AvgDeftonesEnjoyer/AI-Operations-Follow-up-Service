@@ -10,7 +10,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from followup.ai import AIError, ClaudeInterpreter, StubAI
-from followup.api import DeliveryAPI, TaskAPI
+from followup.api import APIError, DeliveryAPI, TaskAPI
 from followup.service import Service
 from followup.store import Store, now_utc
 
@@ -71,7 +71,7 @@ def main():
         except (Exception, KeyboardInterrupt) as exc:  # Ctrl+C still writes honest reports.
             # Only our own errors carry their text (record number, field name, HTTP status);
             # anything else is reported by type, so task data or credentials cannot leak.
-            text = f": {exc}" if isinstance(exc, (ValueError, AIError)) else ""
+            text = f": {exc}" if isinstance(exc, (ValueError, APIError, AIError)) else ""
             run.update(status="failed", error=type(exc).__name__ + text)
         run["finished_at"] = now_utc()
         run["llm_usage"] = getattr(ai, "usage", None)

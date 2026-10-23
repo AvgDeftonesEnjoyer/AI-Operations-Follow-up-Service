@@ -119,35 +119,31 @@ class Service:
         return "failed"
 
     def classify(self, task):
-        """Return (blocker label, whether it is an unpinned fallback label).
+        """The blocker label for a task's notes, asked of the model only when it can matter.
 
-        The model is asked only when its label can change the action. Its answer is pinned
-        per note text, so a different answer next run cannot turn the same notes into a
-        different action; the first worker to pin wins.
+        The label is pinned per note text, fallback or not, and the first worker to pin wins:
+        the same notes can never lead to two different messages, even after the model
+        recovers. Edited notes are classified afresh.
         """
         if task.status in {"Done", "Unknown"} or not (task.owner and task.due_date and task.notes):
-            return "none", False  # Missing facts or a finished task: notes cannot change the action.
+            return "none"  # Missing facts or a finished task: the notes cannot change the action.
         if task.status != "Blocked" and self.today <= task.due_date:
-            return "none", False  # On time and not blocked: no action either way, so no model cost.
+            return "none"  # On time and not blocked: no action either way, so no model cost.
         state_id = task.state_id()
         stored = self.store.get_classification(state_id)
         if stored is not None:
-            return stored, False
+            return stored
         label, fallback_reason = interpret_safely(self.ai, task.notes)
-        if fallback_reason is None:
-            return self.store.save_classification(state_id, label), False
-        self.fallbacks += 1
-        self.store.log("llm_fallback", detail=f"Task {task.task_id}; reason={fallback_reason}")
-        # Another worker may have stored the model's answer meanwhile: prefer it.
-        stored = self.store.get_classification(state_id)
-        return (stored, False) if stored is not None else (label, True)
+        if fallback_reason is not None:
+            self.fallbacks += 1
+            self.store.log("llm_fallback", detail=f"Task {task.task_id}; reason={fallback_reason}")
+        return self.store.save_classification(state_id, label)
 
     def iter_results(self):
         """Yield each result as soon as it is final, so a later failure cannot erase it."""
         for task in self.fetch_tasks():
-            blocker, unpinned_fallback = self.classify(task)
             asked_on = self.store.owner_asked_on(task.task_id, task.owner, task.due_key)
-            action = decide(task, self.today, blocker, asked_on)
+            action = decide(task, self.today, self.classify(task), asked_on)
             if action.decision == "no_action":
                 yield action.to_dict("not_needed")
                 continue
@@ -158,10 +154,6 @@ class Service:
                 # Our own record of what was delivered: escalation timing must not depend on
                 # what a real provider keeps.
                 self.store.record_action(action, task.due_key, self.today)
-                if unpinned_fallback:
-                    # Delivered on the fallback label: keep it, so a recovered model cannot send
-                    # a second, different message. Undelivered, the model gets another try.
-                    self.store.save_classification(task.state_id(), blocker)
             yield action.to_dict(status)
 
     def run(self):

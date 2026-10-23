@@ -20,9 +20,9 @@ STATUSES = {
     "not started": "Not Started",
 }
 # Placeholder text in the owner field means that nobody is assigned yet.
-NO_OWNER = {"tbd", "tba", "n/a", "na", "none", "null", "unknown", "pending", "vacant", "nobody",
-            "open", "-", "?"}
-NO_OWNER_PHRASE = re.compile(r"\b(unassigned|no owner|not (?:yet )?assigned|to (?:be )?assign(?:ed)?|tb[ad])\b")
+NO_OWNER = {"tbd", "tba", "tbc", "n/a", "na", "none", "null", "unknown", "pending", "vacant",
+            "nobody", "open", "-", "?"}
+NO_OWNER_PHRASE = re.compile(r"\b(unassigned|no owner|not (?:yet )?assigned|to (?:be )?assign(?:ed)?|tb[acd])\b")
 
 
 def clean(data, field):
@@ -51,7 +51,7 @@ def clean(data, field):
 
 def parse_date(value):
     """YYYY-MM-DD, or an ISO timestamp whose date part is used. Invalid dates stay unknown."""
-    pattern = r"\d{4}-\d{2}-\d{2}(?:T[\d:.]+(?:Z|[+-]\d{2}:?\d{2})?)?"
+    pattern = r"\d{4}-\d{2}-\d{2}(?:[T ][\d:.]+(?:Z|[+-]\d{2}:?\d{2})?)?"
     try:
         if not isinstance(value, str) or not re.fullmatch(pattern, value):
             return None
@@ -108,17 +108,14 @@ class Task:
         return self.due_date.isoformat() if self.due_date else self.due_raw
 
     def operation_id(self, action):
-        """One message per task, action, recipient, reason and deadline.
+        """One ID per task, action, recipient and message text: the same text is never sent twice.
 
-        Notes and last_update are left out, so editing or touching a task never resends the
-        same request; the task name is in, because the message names it. Owner spelling
-        ("Sam Lee" or "sam lee") and deadline spelling do not count as changes.
+        Notes and last_update are not part of any message, so editing or touching a task never
+        resends; a different spelling of the owner ("sam lee") does not count either.
         """
         return digest({
-            "task_id": self.task_id, "title": self.title, "project": self.project,
-            "owner": self.owner.casefold() if self.owner else None, "due_date": self.due_key,
-            "decision": action.decision, "target": (action.target or "").casefold(),
-            "reason": action.reason,
+            "task_id": self.task_id, "decision": action.decision,
+            "target": (action.target or "").casefold(), "message": (action.message or "").casefold(),
         })
 
 

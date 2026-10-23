@@ -7,8 +7,8 @@ gets the reminder: richer or ambiguous notes are the LLM's job, not this fallbac
 import re
 
 
-ITEMS = (r"materials?|supplies|parts|equipment|hardware|cable|conduit|inventory|stock|shipment|"
-         r"shipping|(?<!work )order|deliver(?:y|ies)|backorder\w*|shortage")
+ITEMS = (r"materials?|supplies|parts|equipment|hardware|cable|fiber(?! splic)|conduit|inventory|"
+         r"stock|shipment|shipping|(?<!work )order|deliver(?:y|ies)|backorder\w*|shortage")
 MATERIALS = re.compile(rf"\b({ITEMS}|warehouse|supplier|vendor)\b")
 MATERIAL_ITEMS = re.compile(rf"\b({ITEMS})\b")
 # A blocker cue: waiting for, short of, or not received. What it waits for decides the kind.
@@ -19,17 +19,23 @@ WAITING = re.compile(
     r"no (?:materials?|supplies|parts|equipment|cable|conduit))\b"
     r"|(?:\bnot|\bnever|\bnothing|n't) (?:yet )?(?:been )?(?:deliver|ship|receiv|arriv)\w*"
 )
-# Only a wait on upstream work or a permit goes past the owner to coordination.
-UPSTREAM = re.compile(r"\b(upstream|permit)\b")
-# "No backorder", "not delayed", "no need for parts": a negated blocker is not a blocker.
+# Only a wait on upstream work, a permit, or another task ("blocked by TC-1008") goes past
+# the owner to coordination.
+UPSTREAM = re.compile(r"\b(upstream|permit|[a-z]{2,}-\d+)\b")
+# "No backorder", "not delayed", "no materials issues": a negated blocker is not a blocker.
 NEGATED = re.compile(
     r"\b(?:no|not|nothing|never) (?:await\w*|waiting|pending|delay\w*|backorder\w*|out of stock|"
-    r"blocked (?:by|on)|dependent on|upstream)\b|\bno (?:\w+ )?(?:shortage|missing)\b"
+    r"blocked (?:by|on)|dependent on|upstream|late|missing)\b"
+    r"|\bno (?:\w+ )?(?:shortage|missing|issues?|problems?|concerns?)\b"
 )
 RESOLVED = re.compile(r"\b(resolved|received|arrived|delivered|completed|approved|cleared|no longer)\b")
 # "Not yet received", "until it is received", "awaiting approved materials": not done yet.
 STILL_PENDING = re.compile(r"\b(no(?! longer)|not|never|nothing|until|yet|await\w*|waiting|pending)\b|n't")
-BARE_RESOLUTION = re.compile(r"\s*(?:(?:it|this|that) (?:is |was |has been )?)?(?:now |all )?(?:resolved|cleared)\s*")
+# "..., now resolved", "they arrived today": the update refers to the blocker just mentioned.
+BARE_RESOLUTION = re.compile(
+    r"\s*(?:(?:it|this|that|they|these|those) (?:is |are |was |were |has |have )?(?:been )?)?"
+    r"(?:now |all )?(?:resolved|cleared|arrived|received|delivered)(?: today| yesterday)?\s*"
+)
 # "If a backorder occurs" or "could become a problem" is not a blocker yet; "if possible" is courtesy.
 HYPOTHETICAL = re.compile(r"\b(if(?! possible)|unless|in case|might|could become|may become)\b")
 FILLER = {"have", "been", "were", "with", "from", "that", "this", "today", "fully", "also"}
