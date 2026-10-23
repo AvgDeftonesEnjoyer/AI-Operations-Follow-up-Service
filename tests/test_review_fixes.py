@@ -27,6 +27,55 @@ TODAY = date(2026, 10, 21)
 
 
 class NoteContextTests(unittest.TestCase):
+    def test_unrelated_updates_keep_materials_blocker_active(self):
+        for note in [
+            "Awaiting materials from warehouse. Safety training completed.",
+            "Awaiting materials from warehouse and installation is not started.",
+            "Awaiting materials from warehouse, if possible send an update today.",
+            "Awaiting materials from warehouse if possible send an update today.",
+            "Awaiting materials from warehouse, if the manager calls send an update.",
+        ]:
+            with self.subTest(note=note):
+                label = simple_interpretation(note)
+                action = decide(Task.from_dict({**ROW, "notes": note}), TODAY, label)
+                self.assertEqual((action.decision, action.target), ("request_eta", "warehouse"))
+
+    def test_materials_variants_work_in_stub_and_provider_fallback(self):
+        for note in [
+            "Blocked by missing materials from warehouse.",
+            "Waiting on materials from warehouse.",
+            "Materials have not arrived from warehouse.",
+            "Materials have not yet arrived from warehouse.",
+        ]:
+            for ai in [StubAI(), Mock(interpret=Mock(side_effect=AIError("Unavailable")))]:
+                with self.subTest(note=note, provider=type(ai).__name__):
+                    label, _ = interpret_safely(ai, note)
+                    action = decide(Task.from_dict({**ROW, "notes": note}), TODAY, label)
+                    self.assertEqual((action.decision, action.target), ("request_eta", "warehouse"))
+
+    def test_new_materials_phrases_still_respect_resolution_and_negation(self):
+        for note in [
+            "No missing materials from warehouse.",
+            "Not waiting on materials from warehouse.",
+            "If the shipment is delayed, waiting on materials could become a problem.",
+            "Materials have not arrived from warehouse. All materials delivered today.",
+            "Waiting on materials from warehouse, now resolved.",
+        ]:
+            with self.subTest(note=note):
+                self.assertEqual(simple_interpretation(note), "none")
+                self.assertFalse(warehouse_dependency(note))
+
+    def test_materials_variants_do_not_infer_warehouse_from_unrelated_mention(self):
+        for note in [
+            "Waiting on materials from supplier. Warehouse is not involved.",
+            "Blocked by missing materials from supplier and an update from warehouse.",
+            "Materials have not arrived from supplier. Warehouse training completed.",
+        ]:
+            with self.subTest(note=note):
+                action = decide(Task.from_dict({**ROW, "notes": note}), TODAY,
+                                simple_interpretation(note))
+                self.assertEqual((action.decision, action.target), ("request_eta", "Sam"))
+
     def test_resolved_and_conditional_notes_do_not_send_premature_eta_requests(self):
         for note in [
             "Awaiting materials from warehouse, now resolved.",
