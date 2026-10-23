@@ -237,9 +237,9 @@ class RuleTests(unittest.TestCase):
         # Even a long-overdue task first gets a follow-up to its owner.
         self.assertEqual(decide(task(due_date="2026-09-01"), TODAY).decision, "follow_up_owner")
         quiet = task(last_update="2026-10-17")  # No update since the follow-up.
-        self.assertEqual(decide(quiet, TODAY, owner_asked_on=date(2026, 10, 19)).decision,
+        self.assertEqual(decide(quiet, TODAY, chased_on=date(2026, 10, 19)).decision,
                          "follow_up_owner")
-        action = decide(quiet, TODAY, owner_asked_on=date(2026, 10, 18))
+        action = decide(quiet, TODAY, chased_on=date(2026, 10, 18))
         # Escalation goes beyond the owner, who already received the follow-up.
         self.assertEqual((action.decision, action.target), ("escalate", "coordination_queue"))
         self.assertIn("Sam", action.message)

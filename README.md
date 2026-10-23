@@ -94,20 +94,20 @@ Applied in priority order:
 | Task is `Done` | `no_action` | none |
 | Missing owner (or a placeholder such as `TBD`, `Unassigned`, `PM to assign`, `Pending`, `Vacant`) | `clarify` | `coordination_queue` (a role, not an invented person) |
 | Missing/invalid due date or unknown status | `clarify` | known owner |
-| Overdue, and the owner was chased 3+ days ago | `escalate` | `coordination_queue`; the message names the owner and when they were asked |
+| Overdue, and the task was chased 3+ days ago | `escalate` | `coordination_queue`; the message names the owner and when the task was chased |
 | Materials dependency, and the task is `Blocked` or overdue | `request_eta` | `warehouse` when the notes name it, otherwise the owner |
 | Dependency on other work, and the task is `Blocked` or overdue | `escalate` | `coordination_queue`; the message names the owner |
 | `Blocked` with no known cause | `follow_up_owner` | known owner: what is blocking it, and the ETA |
 | Overdue | `follow_up_owner` | known owner |
 | Otherwise (including a dependency on a task that is on time) | `no_action` | none |
 
-**The owner first, then coordination.** An overdue task's owner is chased once — by a follow-up or an ETA request sent to them after the deadline. If the task is still overdue three days later, coordination is asked to agree a recovery plan, whatever the notes say by then: an owner's note ("finishing Friday"), a materials label (even one produced by a tricked model), marking the task Blocked, or touching the record does not stop it. Questions from before the deadline and clarifications about missing facts do not start the clock. A new owner or a moved deadline starts over. Work waiting on another team goes to coordination straight away, because the owner cannot unblock it — once; it is not escalated a second time when the three days pass. `ESCALATE_AFTER_DAYS` and `coordination_queue` are demo assumptions in `followup/rules.py`.
+**The owner first, then coordination.** An overdue task is chased once after its deadline — by a follow-up or an ETA request to the owner, or an ETA request to the warehouse. Requests say "overdue since" once the deadline has passed, so a request sent while the task was on time is repeated then, and the clock starts from it. If the task is still overdue three days later, coordination is asked to agree a recovery plan, whatever the notes say by then: an owner's note ("finishing Friday"), a materials label (even one produced by a tricked model), notes that route everything to the warehouse, marking the task Blocked, or touching the record does not stop it. Clarifications about missing facts do not start the clock. A new owner or a moved deadline gets its own clock; going back to an earlier owner or deadline reuses its history. Work waiting on another team goes to coordination straight away, because the owner cannot unblock it — once; it is not escalated a second time when the three days pass. `ESCALATE_AFTER_DAYS` and `coordination_queue` are demo assumptions in `followup/rules.py`.
 
 **Messages.** Each starts with the task ID, title, and project; reminders, ETA requests, and escalations also give the due date, so the recipient needs no other context. Messages contain no day counts. Missing or invalid dates are never guessed.
 
 A valid model classification is used as returned; without one, `followup/notes.py` judges each clause of the note (split at punctuation, `and`, `but`) with small English keyword lists. When in doubt the answer is `none`, so the owner gets the reminder:
 
-- a blocker word (`awaiting`, `pending`, `blocked`, `held up`, `on order`, `backorder`, `short on`, `missing`, `delayed`, `late`, `ran out`, `ETA unknown`, `haven't received`…) next to a materials word (`materials`, `supplies`, `parts`, `hardware`, `cable`, `inventory`, `shipping`, `delivery`, `supplier`, `warehouse`…) means `materials` — so the spec's "blocked by materials" asks for an ETA; a bare "not received yet" refers to the item named just before it;
+- a blocker word (`awaiting`, `pending`, `blocked`, `held up`, `stuck`, `in transit`, `on order`, `backorder`/`back-ordered`, `short on`, `missing`, `delayed`, `late`, `ran out`, `ETA unknown`, `haven't received`…) next to a materials word (`materials`, `supplies`, `parts`, `hardware`, `cable`, `conduit`, `handholes`, `inventory`, `shipping`, `delivery`, `supplier`, `warehouse`…) means `materials` — so the spec's "blocked by materials" asks for an ETA; a bare "not received yet" refers to the item named just before it;
 - a blocker word next to `upstream`, `permit`, or another task's ID (letters, a dash, three or more digits, like `TC-1008`) means `upstream` ("unable to proceed until upstream splice confirmed", "waiting on city permit", "blocked by TC-1008"); anything else — a bare "pending", "blocked by weather", or "permit issued" with no wait — goes to the owner, not past them;
 - negated (`no backorder`, `not delayed`, `no longer waiting`, `no materials issues`, `no parts required`) and hypothetical (`if a backorder occurs`, `could become a problem`) clauses do not count;
 - a resolution (`resolved`, `delivered`, `completed`…) does not count when the same clause says it has not happened yet (`not yet received`); a later update closes the blocker it talks about: "all materials have arrived" closes materials blockers, "permit completed" closes the permit wait, a bare "now resolved" closes the last one, and "safety training completed" closes nothing;
@@ -117,11 +117,11 @@ These are deliberately small rules, not a language parser; richer notes are the 
 
 ### Why repeated runs are safe
 
-- **Stable operation ID.** `Task.operation_id()` is one ID per task, action, recipient, and request — the message text after the task's heading. The same request never goes to the same recipient twice: renaming the task, editing notes, touching `last_update`, or another spelling of the owner's name never resends. Owner-facing requests say "overdue since" once the deadline has passed, so the owner is asked again then. The mock delivery server stores the ID as a unique SQLite key.
+- **Stable operation ID.** `Task.operation_id()` is one ID per task, action, recipient, and request facts — the `key` each rule sets (for example `overdue since 2026-10-18` or `materials; due 2026-10-22`), never the wording. So the same request never goes to the same recipient twice: renaming the task, editing notes, touching `last_update`, another spelling of the owner's name, or editing a message template during a live change does not resend. The mock delivery server stores the ID as a unique SQLite key.
 - **Own action record.** After a confirmed delivery the service writes its own `actions` row; escalation timing reads that, not the provider's storage, so swapping in a real provider keeps escalation working.
 - **Reconciliation.** The service looks the receipt up **before** sending and again after any timeout or error. When the server committed a delivery but the response was lost, the lookup finds it and no second send happens.
 - **Pinned classification.** The label is stored per note text the first time it is decided — from the model or, if the model failed, from the keyword fallback — and the first worker to store it wins. So the same notes never lead to two different messages, even when the model recovers later; the fallback is logged and counted in the run report, and edited notes are classified afresh. The model is asked only for `Blocked` or overdue tasks, where its label leads to an action. Labels stay with an existing database, so compare interpreters (`stub` versus `claude`) on separate databases. Date rules are recomputed, so a reminder can later become an escalation.
-- **Honest reports.** An `already_sent` row shows the request that was delivered; only the task's name or the letter case of the owner's name can differ, if they changed since.
+- **Honest reports.** An `already_sent` row is the same request that was delivered; its wording is today's, so it differs only if a template, the task's name, or the letter case of the owner's name changed since.
 - **Concurrency.** Receipts and labels use `INSERT OR IGNORE`: the first stored label wins for every worker, so one note never leads to two different messages, and a worker that loses a delivery race reports `already_sent`.
 - **Partial batches.** Each decision is reported as soon as it is final, so a mid-batch failure — or Ctrl+C — keeps finished results in both reports. A crash after a committed send is reported as `already_sent` on the next run.
 
@@ -145,7 +145,7 @@ Incomplete in this timebox:
 - CLI batch only; no HTTP API or scheduler.
 - No live quality evaluation of the LLM classifier.
 - Offline keyword rules are English-only and deliberately simple.
-- ETA requests to the warehouse and clarifications of missing facts are sent once; they are not escalated automatically if nobody answers.
+- Clarifications of missing facts (owner, due date, status) are sent once; they are not escalated automatically if nobody answers.
 - No staleness rule based on `last_update`; retries do not read `Retry-After` headers.
 
 For production at ~10,000 tasks/day:

@@ -142,8 +142,8 @@ class Service:
     def iter_results(self):
         """Yield each result as soon as it is final, so a later failure cannot erase it."""
         for task in self.fetch_tasks():
-            asked_on = self.store.owner_asked_on(task.task_id, task.owner, task.due_key)
-            action = decide(task, self.today, self.classify(task), asked_on)
+            chased_on = self.store.chased_on(task.task_id, task.owner, task.due_key)
+            action = decide(task, self.today, self.classify(task), chased_on)
             if action.decision == "no_action":
                 yield action.to_dict("not_needed")
                 continue

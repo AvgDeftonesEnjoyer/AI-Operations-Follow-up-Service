@@ -114,15 +114,15 @@ class Task:
         return self.due_date.isoformat() if self.due_date else self.due_raw
 
     def operation_id(self, action):
-        """One ID per task, action, recipient and request: the same request is never sent twice.
+        """One ID per task, action, recipient and request facts: never the same request twice.
 
-        The request is the message after the task's heading, so renaming the task, editing
-        notes, touching last_update, or another spelling of the owner never resends.
+        Built from the facts (action.key), not the wording, so renaming the task, editing notes,
+        touching last_update, another spelling of the owner, or editing a message template
+        never resends.
         """
-        request = (action.message or "").removeprefix(self.heading)
         return digest({
             "task_id": self.task_id, "decision": action.decision,
-            "target": (action.target or "").casefold(), "request": request.casefold(),
+            "target": (action.target or "").casefold(), "key": action.key.casefold(),
         })
 
 
@@ -139,6 +139,7 @@ class Action:
     reason: str
     message: str | None
     operation_id: str | None = None
+    key: str = ""  # The facts of the request (not its wording); see Task.operation_id.
 
     def to_dict(self, delivery_status):
         return {

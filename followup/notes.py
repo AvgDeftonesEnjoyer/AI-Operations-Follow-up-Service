@@ -7,14 +7,14 @@ gets the reminder: richer or ambiguous notes are the LLM's job, not this fallbac
 import re
 
 
-ITEMS = (r"materials?|supplies|parts|equipment|hardware|cable|fiber(?! splic)|conduit|inventory|"
-         r"stock|shipment|shipping|(?<!work )order|deliver(?:y|ies)|backorder\w*|shortage")
+ITEMS = (r"materials?|supplies|parts|equipment|hardware|cable|fiber(?! splic)|conduit|handholes?|"
+         r"inventory|stock|shipment|shipping|(?<!work )order|deliver(?:y|ies)|back[- ]?order\w*|shortage")
 MATERIALS = re.compile(rf"\b({ITEMS}|warehouse|supplier|vendor)\b")
 MATERIAL_ITEMS = re.compile(rf"\b({ITEMS})\b")
 # A blocker cue: waiting for, short of, or not received. What it waits for decides the kind.
 WAITING = re.compile(
-    r"\b(await\w*|waiting|pending|blocked|held up|on order|dependent on|depends on|backorder\w*|"
-    r"out of|shortage|short on|missing|not available|unavailable|delay\w*|late|ran out|"
+    r"\b(await\w*|waiting|pending|blocked|held up|stuck|in transit|on order|dependent on|depends on|"
+    r"back[- ]?order\w*|out of|shortage|short on|missing|not available|unavailable|delay\w*|late|ran out|"
     r"run out|(?:proceed|start) until|(?:date|eta) (?:unknown|tbd)|unknown eta|no eta|"
     r"no (?:materials?|supplies|parts|equipment|cable|conduit))\b"
     r"|(?:\bnot|\bnever|\bnothing|n't) (?:yet )?(?:been )?(?:deliver|ship|receiv|arriv)\w*"
@@ -25,7 +25,7 @@ NOT_RECEIVED = re.compile(r"(?:\bnot|\bnever|\bnothing|n't) (?:yet )?(?:been )?(
 UPSTREAM = re.compile(r"\b(upstream|permit|[a-z]{2,5}-\d{3,})\b")
 # "No backorder", "not delayed", "no materials issues": a negated blocker is not a blocker.
 NEGATED = re.compile(
-    r"\b(?:no longer|no|not|nothing|never) (?:await\w*|waiting|pending|delay\w*|backorder\w*|out of stock|"
+    r"\b(?:no longer|no|not|nothing|never) (?:await\w*|waiting|pending|delay\w*|back[- ]?order\w*|out of stock|"
     r"blocked (?:by|on)|dependent on|upstream|late|missing)\b"
     r"|\bno (?:\w+ )?(?:shortage|missing|issues?|problems?|concerns?|needed|required)\b"
 )
@@ -67,8 +67,8 @@ def active_blockers(notes: str):
     previous = ""
     text = NEGATED.sub("", " ".join(notes.casefold().split()))
     for clause in re.split(r"[.;,!?]|\b(?:and|but|however)\b", text):
-        if HYPOTHETICAL.search(clause):
-            continue
+        if not clause.strip() or HYPOTHETICAL.search(clause):
+            continue  # ", but" leaves an empty piece; skip it so "previous" stays meaningful.
         kind = blocker_kind(clause)
         if kind is None and NOT_RECEIVED.search(clause) and not is_resolved(previous):
             # "Materials ordered, but not received yet": it refers to the item just named.

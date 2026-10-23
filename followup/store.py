@@ -98,17 +98,17 @@ class Store:
                  (action.target or "").casefold(), due_date, as_of.isoformat()),
             )
 
-    def owner_asked_on(self, task_id: str, owner: str | None, due_date: str | None):
-        """The date this owner was first chased after this deadline passed, or None.
+    def chased_on(self, task_id: str, owner: str | None, due_date: str | None):
+        """When this task was first chased after this deadline passed, or None.
 
-        A follow-up or an ETA request to the owner counts; a question from before the deadline,
-        or a clarification about missing facts, does not. A new owner or a moved deadline
-        starts over.
+        A follow-up or an ETA request to the owner, or an ETA request to the warehouse, counts;
+        a request from before the deadline, or a clarification about missing facts, does not.
+        A new owner or a moved deadline gets its own clock.
         """
         row = self.connection.execute(
             "SELECT MIN(as_of) FROM actions WHERE task_id = ? "
-            "AND decision IN ('follow_up_owner', 'request_eta') AND target = ? AND due_date = ? "
-            "AND as_of > due_date",
+            "AND decision IN ('follow_up_owner', 'request_eta') AND target IN (?, 'warehouse') "
+            "AND due_date = ? AND as_of > due_date",
             (task_id, (owner or "").casefold(), due_date),
         ).fetchone()
         return date.fromisoformat(row[0]) if row[0] else None
