@@ -28,9 +28,9 @@ class TaskAPI:
         self.calls += 1
         if self.fail_first:
             raise APIError(self.fail_first.pop(0))
-        # utf-8-sig: Windows tools often save JSON with a byte order mark.
-        with self.fixture.open(encoding="utf-8-sig") as file:
-            tasks = json.load(file)
+        # From bytes, json detects UTF-8 (with or without a BOM), UTF-16 and UTF-32:
+        # Windows tools often save JSON in one of those.
+        tasks = json.loads(self.fixture.read_bytes())
         if not isinstance(tasks, list):
             raise ValueError("Fixture must be an array of tasks")
         return tasks

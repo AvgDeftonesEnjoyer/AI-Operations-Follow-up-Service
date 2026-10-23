@@ -2,7 +2,13 @@
 
 A small Python 3.11+ service that reads project tasks, decides which ones need attention, and **simulates** sending safe follow-up messages. Deterministic rules own every fact and action; an optional LLM only classifies free-text notes. An SQLite delivery log prevents duplicate sends across runs, retries, and timeouts.
 
-No real messages are sent. **No third-party packages are required.**
+No real messages are sent.
+
+## Requirements
+
+- Python 3.11 or newer (tested on 3.11 and 3.14).
+- No install step: the standard library is enough (`requirements.txt` is intentionally empty).
+- `ANTHROPIC_API_KEY` only for the optional `--llm claude` mode.
 
 ## Run it
 
@@ -92,7 +98,7 @@ Applied in priority order:
 | 1–6 days overdue | `follow_up_owner` | known owner |
 | Otherwise | `no_action` | none |
 
-Every message starts with the task ID, title, and project, and includes the due date when it is known, so the recipient needs no other context. The 7-day threshold and `coordination_queue` are demo assumptions in `followup/rules.py`. Missing or invalid dates are never guessed. A valid model classification is used as returned; without one, `followup/notes.py` uses small English keyword lists: a waiting word (`awaiting`, `waiting`, `pending`, `delayed`, `backorder`, `out of stock`, `not yet delivered`…) plus a materials word (`materials`, `parts`, `equipment`, `cable`, `conduit`…) means `materials`; a waiting word alone means `upstream`; `resolved`/`received`/`no longer` means `none`. Mixed notes ("resolved, but still waiting") are the LLM's job.
+Every message starts with the task ID, title, and project; reminders, ETA requests, and escalations also give the due date, so the recipient needs no other context. The 7-day threshold and `coordination_queue` are demo assumptions in `followup/rules.py`. Missing or invalid dates are never guessed. A valid model classification is used as returned; without one, `followup/notes.py` uses small English keyword lists: a waiting word (`awaiting`, `waiting`, `pending`, `delayed`, `backorder`, `out of stock`, `not yet delivered`…) plus a materials word (`materials`, `parts`, `equipment`, `cable`, `conduit`…) means `materials`; a waiting word alone means `upstream`; `resolved`/`received`/`no longer` means `none`. A negated blocking word (`no backorder`, `not delayed`, `nothing pending`) does not count. Mixed notes ("resolved, but still waiting") are the LLM's job.
 
 ### Why repeated runs are safe
 
@@ -104,7 +110,7 @@ Every message starts with the task ID, title, and project, and includes the due 
 
 ### Input validation
 
-All task fields must be strings or null, valid Unicode, at most 4,000 characters. Errors name the record and field (`Task #2: last_update must be a string or null`), never the value. Missing or duplicate task IDs abort ingestion **before any send**. Dates must be `YYYY-MM-DD`; invalid due dates trigger clarification. IDs are trimmed and uppercased. Statuses are case-insensitive, with common synonyms (`Completed`/`Closed` → `Done`, `In Progress` → `Working on it`); any other status asks the owner to clarify. Files saved with a UTF-8 byte order mark are accepted. Fixture, database, and report paths must differ, so a report can never overwrite the delivery receipts.
+All task fields must be strings or null, valid Unicode, at most 4,000 characters. Errors name the record and field (`Task #2: last_update must be a string or null`), never the value. Missing or duplicate task IDs abort ingestion **before any send**. Dates must be `YYYY-MM-DD`; invalid due dates trigger clarification. IDs are trimmed and uppercased. Statuses are case-insensitive, with common synonyms (`Completed`/`Closed` → `Done`, `In Progress` → `Working on it`); any other status asks the owner to clarify. Fixtures saved as UTF-8 (with or without a byte order mark), UTF-16, or UTF-32 are accepted. Fixture, database, and report paths must differ, so a report can never overwrite the delivery receipts.
 
 ## Assumptions and trade-offs
 
