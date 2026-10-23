@@ -83,6 +83,7 @@ Applied in this order (`followup/rules.py`):
 - The model cannot change facts: owners, dates, status, recipients, and message text come from Python. Notes are sent as untrusted data.
 - 429/5xx and timeouts get one retry, then the fallback; if Claude keeps failing it is skipped for the rest of the run. A bad request, a rejected key, or an unknown model (400/401/403/404) stops the run instead of hiding behind the fallback.
 - The run report counts fallbacks (`llm_fallbacks`) and token use (`llm_usage`). Provider messages and keys are never logged; redirects are refused and responses are capped at 64 KiB.
+- Checked live (2026-10-24, `claude-sonnet-5-5`): `tasks.json` gets the same actions as with the keyword rules, using 5 calls and about 1,900 input tokens, with no fallbacks; a rerun makes no calls. On ten tricky notes (injection, negation, resolved, hypothetical, Spanish, a part code) the model labeled all ten correctly and the keyword rules seven. Their three misses fall back to an owner reminder.
 
 ## Input handling
 
@@ -111,7 +112,7 @@ Fields may be strings, numbers (`"task_id": 1002` → `"1002"`), or null, up to 
 
 ## What is incomplete, and what changes for production
 
-Incomplete: CLI only, no HTTP API or scheduler; no live quality evaluation of the LLM; English-only keyword rules (a part code shaped like a task ID, `ABC-1234`, reads as a task dependency); clarifications of missing facts are not escalated; `Retry-After` headers are not read.
+Incomplete: CLI only, no HTTP API or scheduler; the LLM was checked live on ten notes, not an evaluation set; English-only keyword rules (a part code shaped like a task ID, `ABC-1234`, reads as a task dependency); clarifications of missing facts are not escalated; `Retry-After` headers are not read.
 
 For ~10,000 tasks/day:
 
