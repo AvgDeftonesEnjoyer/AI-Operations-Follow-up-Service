@@ -36,6 +36,17 @@ class Store:
                     blocker TEXT NOT NULL CHECK (blocker IN ('none', 'materials', 'upstream'))
                 )
             """)
+            # The service's own record of confirmed actions, independent of the provider.
+            self.connection.execute("""
+                CREATE TABLE IF NOT EXISTS actions (
+                    operation_id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    decision TEXT NOT NULL,
+                    target TEXT,
+                    due_date TEXT,
+                    as_of TEXT NOT NULL
+                )
+            """)
             self.connection.execute("""
                 CREATE TABLE IF NOT EXISTS events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -78,17 +89,23 @@ class Store:
             )
         return cursor.rowcount == 1
 
+    def record_action(self, action, due_date: str | None, as_of: date):
+        """Remember a confirmed delivery; the first date wins."""
+        with self.connection:
+            self.connection.execute(
+                "INSERT OR IGNORE INTO actions VALUES (?, ?, ?, ?, ?, ?)",
+                (action.operation_id, action.task_id, action.decision, action.target,
+                 due_date, as_of.isoformat()),
+            )
+
     def owner_asked_on(self, task_id: str, owner: str | None, due_date: str | None):
-        """The as-of date of the first follow-up this owner got for this deadline, or None.
+        """The date this owner first got a follow-up for this deadline, or None.
 
         A new owner or a moved deadline starts over with a fresh follow-up.
         """
         row = self.connection.execute(
-            "SELECT MIN(json_extract(action_json, '$.as_of')) FROM deliveries "
-            "WHERE json_extract(action_json, '$.task_id') = ? "
-            "AND json_extract(action_json, '$.decision') = 'follow_up_owner' "
-            "AND json_extract(action_json, '$.target') = ? "
-            "AND json_extract(action_json, '$.due_date') = ?",
+            "SELECT MIN(as_of) FROM actions WHERE task_id = ? AND decision = 'follow_up_owner' "
+            "AND target = ? AND due_date = ?",
             (task_id, owner, due_date),
         ).fetchone()
         return date.fromisoformat(row[0]) if row[0] else None

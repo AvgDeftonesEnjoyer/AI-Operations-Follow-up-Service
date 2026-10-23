@@ -173,15 +173,17 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(sum(r["delivery_status"] == "failed" for r in results), 1)
         self.assertEqual(len(self.store.deliveries()), 6)
 
-    def test_changed_task_state_can_trigger_new_follow_up(self):
-        original = task()
-        old = decide(original, TODAY)
-        revised = task(notes="New status information.")
-        new = decide(revised, TODAY)
-        self.assertNotEqual(
-            original.fingerprint(old.decision, old.target),
-            revised.fingerprint(new.decision, new.target),
-        )
+    def test_new_owner_or_deadline_is_a_new_message_but_note_edits_are_not(self):
+        def operation_id(**changes):
+            item = task(**changes)
+            return item.operation_id(decide(item, TODAY))
+
+        original = operation_id()
+        self.assertEqual(operation_id(notes="New status information."), original)
+        self.assertEqual(operation_id(last_update="2026-10-21"), original)
+        self.assertEqual(operation_id(assigned_to="  Sam "), original)  # Spacing is not a change.
+        self.assertNotEqual(operation_id(assigned_to="Mary"), original)
+        self.assertNotEqual(operation_id(due_date="2026-10-19"), original)
 
     def test_duplicate_ids_rejected_before_sending(self):
         path = Path(self.directory.name) / "duplicate.json"
@@ -284,9 +286,10 @@ class RuleTests(unittest.TestCase):
         self.assertEqual((action.decision, action.target), ("request_eta", "Sam"))
 
     def test_normalizes_status_and_id(self):
-        item = task(task_id=" tc-99 ", status="  DONE ")
+        item = task(task_id=" tc-99 ", status="  DONE ", assigned_to="Sam  Lee")
         self.assertEqual(item.task_id, "TC-99")
         self.assertEqual(item.status, "Done")
+        self.assertEqual(item.owner, "Sam Lee")  # Inner spacing is not a different owner.
 
     def test_common_status_synonyms_are_normalized_and_others_are_not_guessed(self):
         for raw, status in [("Completed", "Done"), ("closed", "Done"), ("Finished", "Done"),

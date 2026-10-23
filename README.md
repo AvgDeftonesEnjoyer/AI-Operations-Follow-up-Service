@@ -65,7 +65,7 @@ python main.py --llm claude --db .data/claude_demo.sqlite
 `ClaudeInterpreter` (`followup/ai.py`) calls the Claude Messages API to **classify non-empty notes** — nothing else — and only when the label can change the action (the task is `Blocked` or overdue, with owner and due date known), so on-time tasks cost nothing:
 
 - **Structured output:** a JSON Schema (`output_config.format`) allows only `{"blocker_type": "none" | "materials" | "upstream"}`. The answer is validated again locally; extra fields, invalid JSON, refusals, truncated output, or unexpected content blocks trigger the deterministic fallback. Thinking blocks are ignored.
-- **The model cannot change facts or actions.** Owners, dates, status, recipients, and message text come from Python, never from the model. Notes are sent as untrusted data, and the system prompt says to ignore instructions inside them.
+- **The model cannot change facts.** Owners, dates, status, and message text come from Python, never from the model. Its label only chooses among the actions the rules allow for that task (reminder, ETA request, escalation); a prompt injection can at worst pick a different one of those, never silence an overdue task or invent a recipient. Notes are sent as untrusted data, and the system prompt says to ignore instructions inside them.
 - **Errors:** 429/5xx, timeouts, and network errors get one retry after 1 second, then the fallback; if that retry fails too, Claude is skipped for the rest of the run (`provider_unavailable`) instead of being called for every note. Configuration errors — 400 (bad request), 401/403 (rejected key), 404 (unknown model) — stop the run: every call would fail the same way, so silently running on the fallback would hide the problem. Each fallback is logged as `llm_fallback` with a short reason from a fixed list (`http_<status>`, `timeout`, `network_error`, `invalid_json`, `invalid_schema`, `truncated_output`, `refusal`, `unexpected_stop`, `unsupported_content`, `response_too_large`, `provider_unavailable`, `provider_error`); provider messages and keys are never logged.
 - **Visible degradation and cost:** the run report stores `llm_fallbacks` (notes the model could not classify) and `llm_usage` (calls and token totals); the CLI prints a warning when any fallback happened. A missing or malformed key (spaces, control characters) fails before the run starts; surrounding whitespace is trimmed.
 - **Hardening:** redirects are refused (the key never leaves api.anthropic.com), and responses are capped at 64 KiB.
@@ -80,8 +80,10 @@ Only notes are sent to Anthropic, but notes can contain sensitive information: `
 4. `followup/notes.py` — offline keyword classification and warehouse routing.
 5. `followup/ai.py` — Claude adapter with schema validation and safe fallback.
 6. `followup/api.py` — mock task and delivery APIs with failure injection.
-7. `followup/store.py` — SQLite mock delivery receipts, classifications, audit log.
+7. `followup/store.py` — SQLite: mock delivery receipts, the service's own action record, classifications, audit log.
 8. `followup/service.py` — ties everything together; retries and reconciliation.
+
+Tests: `test_followup.py` (spec scenarios and rules), `test_edge_cases.py` (notes, dates, escalation timing, Claude adapter), `test_notes_and_reports.py`, `test_lookups_and_recovery.py`, `test_partial_batch.py`.
 
 ### Decision rules
 
@@ -95,16 +97,15 @@ Applied in priority order:
 | Materials dependency, and the task is `Blocked` or overdue | `request_eta` | `warehouse` when the notes name it, otherwise the owner |
 | Dependency on other work, and the task is `Blocked` or overdue | `escalate` | `coordination_queue`; the message names the owner |
 | `Blocked` with no known cause | `clarify` | known owner (what is blocking it, and the ETA) |
-| Overdue, owner already asked, and no answer for 3+ days | `escalate` | `coordination_queue`; the message names the owner and when they were asked |
-| Overdue, owner already asked, and they updated the task since | `no_action` | none (until 3 days pass without progress) |
-| Overdue | `follow_up_owner` | known owner |
+| Overdue, and the owner was asked 3+ days ago | `escalate` | `coordination_queue`; the message names the owner and when they were asked |
+| Overdue | `follow_up_owner` | known owner (once per owner and deadline) |
 | Otherwise (including a dependency on a task that is on time) | `no_action` | none |
 
-The owner is asked first, except for work waiting on another team, which the owner cannot unblock: even a long-overdue task gets a follow-up. It escalates only if it is still overdue three days after that follow-up to the same owner for the same deadline — or three days after the owner's last update, which counts as their answer (even when made the same day). A new owner or a moved deadline starts over. `ESCALATE_AFTER_DAYS` and `coordination_queue` are demo assumptions in `followup/rules.py`. Every message starts with the task ID, title, and project; reminders, ETA requests, and escalations also give the due date, so the recipient needs no other context. Messages contain no day counts, so the same task state always produces the same text. Missing or invalid dates are never guessed.
+The owner is asked first, except for work waiting on another team, which the owner cannot unblock: even a long-overdue task gets a follow-up, once. If it is still overdue three days after that follow-up, coordination is asked to agree a recovery plan — an owner's note ("finishing Friday") does not stop that while the task stays overdue, and touching the record does not postpone it. A new owner or a moved deadline starts over. `ESCALATE_AFTER_DAYS` and `coordination_queue` are demo assumptions in `followup/rules.py`. Every message starts with the task ID, title, and project; reminders, ETA requests, and escalations also give the due date, so the recipient needs no other context. Messages contain no day counts. Missing or invalid dates are never guessed.
 
 A valid model classification is used as returned; without one, `followup/notes.py` judges each clause of the note (split at punctuation, `and`, `but`) with small English keyword lists. When in doubt the answer is `none`, so the owner gets the reminder:
 
-- a blocker word (`awaiting`, `pending`, `blocked by`, `held up`, `backorder`, `short on`, `missing`, `delayed`, `late`, `ran out`, `ETA unknown`, `haven't received`…) next to a materials word (`materials`, `supplies`, `parts`, `cable`, `delivery`, `supplier`, `warehouse`…) means `materials` — so the spec's "blocked by materials" asks for an ETA;
+- a blocker word (`awaiting`, `pending`, `blocked`, `held up`, `on order`, `backorder`, `short on`, `missing`, `delayed`, `late`, `ran out`, `ETA unknown`, `haven't received`…) next to a materials word (`materials`, `supplies`, `parts`, `cable`, `delivery`, `supplier`, `warehouse`…) means `materials` — so the spec's "blocked by materials" asks for an ETA;
 - a blocker word next to `upstream` or `permit` means `upstream` ("unable to proceed until upstream splice confirmed", "waiting on city permit"); anything else — a bare "pending", "blocked by weather", or "permit issued" with no wait — goes to the owner, not past them;
 - negated (`no backorder`, `not delayed`) and hypothetical (`if a backorder occurs`, `could become a problem`) clauses do not count;
 - a resolution (`resolved`, `delivered`, `completed`…) does not count when the same clause says it has not happened yet (`not yet received`); a later update closes the blocker it talks about: "all materials have arrived" closes materials blockers, "permit completed" closes the permit wait, a bare "now resolved" closes the last one, and "safety training completed" closes nothing;
@@ -114,16 +115,17 @@ These are deliberately small rules, not a language parser; richer notes are the 
 
 ### Why repeated runs are safe
 
-- **Stable operation ID.** `Task.fingerprint()` hashes the normalized task state (every field except `last_update`, so touching a record without changing it does not resend) with the decision and target. The mock delivery server stores it as a unique SQLite key, so the same task/action/state is delivered once.
+- **Stable operation ID.** `Task.operation_id()` means one message per task, action, recipient, reason, and deadline. It includes everything the message text depends on (task ID, title, project, owner, due date), so one ID is always one text, and leaves out notes and `last_update`, so editing or touching a task never resends the same request. The mock delivery server stores it as a unique SQLite key.
+- **Own action record.** After a confirmed delivery the service writes its own `actions` row; escalation timing reads that, not the provider's storage, so swapping in a real provider keeps escalation working.
 - **Reconciliation.** The service looks the receipt up **before** sending and again after any timeout or error. When the server committed a delivery but the response was lost, the lookup finds it and no second send happens.
-- **Pinned classification.** The label (from the model or the fallback) is stored per task state, so a model that answers differently on the next run cannot change the action and its operation ID. Because the model is asked only when its label leads to an action, nothing is pinned for tasks that need none. Date rules are recomputed, so a reminder can later become an escalation.
-- **Honest reports.** Messages have no day counts, so an `already_sent` row shows exactly the text that was delivered.
-- **Concurrency.** Receipts and labels use `INSERT OR IGNORE`: the first stored label wins for every worker, so one task state never gets two different messages, and a worker that loses a delivery race reports `already_sent`.
+- **Pinned classification.** The label (from the model or the fallback) is stored per note text, so a model that answers differently on the next run cannot change the action. The model is asked only for `Blocked` or overdue tasks, where its label leads to an action. Date rules are recomputed, so a reminder can later become an escalation.
+- **Honest reports.** One operation ID is one text, so an `already_sent` row shows exactly what was delivered.
+- **Concurrency.** Receipts and labels use `INSERT OR IGNORE`: the first stored label wins for every worker, so one note never leads to two different messages, and a worker that loses a delivery race reports `already_sent`.
 - **Partial batches.** Each decision is reported as soon as it is final, so a mid-batch failure — or Ctrl+C — keeps finished results in both reports. A crash after a committed send is reported as `already_sent` on the next run.
 
 ### Input validation
 
-All task fields must be strings or null, valid Unicode, at most 4,000 characters. Errors name the record and field (`Task #2: last_update must be a string or null`), never the value. Missing or duplicate task IDs abort ingestion **before any send**. Dates must be `YYYY-MM-DD` (for an ISO timestamp such as `2026-10-18T00:00:00Z`, its date part is used); invalid due dates trigger clarification. IDs are trimmed and uppercased. Statuses are case-insensitive, with common synonyms (`Completed`/`Closed`/`Finished` → `Done`, `In Progress`/`In-Progress` → `Working on it`); any other status asks the owner to clarify. Fixtures saved as UTF-8 (with or without a byte order mark), UTF-16, or UTF-32 are accepted. Fixture, database, and report paths must differ, so a report can never overwrite the delivery receipts.
+All task fields must be strings, numbers (`"task_id": 1002` becomes `"1002"`), or null; valid Unicode; at most 4,000 characters. Inner whitespace is collapsed, so `John  Smith` and `John Smith` are the same owner. Errors name the record and field (`Task #2: last_update must be a string or null`), never the value. Missing or duplicate task IDs abort ingestion **before any send**. Dates must be `YYYY-MM-DD` (for an ISO timestamp such as `2026-10-18T00:00:00Z`, its date part is used); invalid due dates trigger clarification. IDs are trimmed and uppercased. Statuses are case-insensitive, with common synonyms (`Completed`/`Closed`/`Finished` → `Done`, `In Progress`/`In-Progress` → `Working on it`); any other status asks the owner to clarify. Fixtures saved as UTF-8 (with or without a byte order mark), UTF-16, or UTF-32 are accepted. Fixture, database, and report paths must differ, so a report can never overwrite the delivery receipts.
 
 ## Assumptions and trade-offs
 
@@ -141,7 +143,7 @@ Incomplete in this timebox:
 - CLI batch only; no HTTP API or scheduler.
 - No live quality evaluation of the LLM classifier.
 - Offline keyword rules are English-only and deliberately simple.
-- ETA requests and clarifications are sent once per task state; they are not escalated automatically if nobody answers.
+- ETA requests and clarifications are sent once per recipient and deadline; they are not escalated automatically if nobody answers.
 - No staleness rule based on `last_update`; retries do not read `Retry-After` headers.
 
 For production at ~10,000 tasks/day:

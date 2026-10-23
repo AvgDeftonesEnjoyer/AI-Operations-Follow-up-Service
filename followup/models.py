@@ -25,16 +25,19 @@ NO_OWNER_PHRASE = re.compile(r"\b(unassigned|no owner|not (?:yet )?assigned|tb[a
 
 
 def clean(data, field):
-    """Convert an optional text field to a stripped string or None.
+    """Convert an optional field to text with single spaces, or None.
 
+    Numbers become text ("task_id": 1002 -> "1002"); lists, objects and booleans are refused.
     Errors name the field, never its value: fixtures may hold private data.
     """
     value = data.get(field)
     if value is None:
         return None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        value = str(value)
     if not isinstance(value, str):
         raise ValueError(f"{field} must be a string or null")
-    text = value.strip()
+    text = " ".join(value.split())  # "John  Smith" and "John Smith" are the same owner.
     if len(text) > 4000:
         raise ValueError(f"{field} must not exceed 4000 characters")
     try:
@@ -94,24 +97,26 @@ class Task:
             notes=clean(data, "notes") or "",
         )
 
-    def fingerprint(self, decision, target):
-        """Same task + same state + same action always gets the same ID.
+    def state_id(self):
+        """Key for the notes classification: new note text is classified anew."""
+        return digest({"task_id": self.task_id, "notes": self.notes})
 
-        last_update is left out: touching a record without changing it must not resend.
+    def operation_id(self, action):
+        """One message per task, action, recipient, reason and deadline.
+
+        Notes and last_update are left out, so editing or touching a task never resends the
+        same request. Everything the message text depends on is in, so one ID is one text.
         """
-        state = {
-            "task_id": self.task_id,
-            "project": self.project,
-            "title": self.title,
-            "owner": self.owner,
-            "due_date": self.due_raw,
-            "status": self.status,
-            "notes": self.notes,
-            "decision": decision,
-            "target": target,
-        }
-        raw = json.dumps(state, sort_keys=True, ensure_ascii=False)
-        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+        return digest({
+            "task_id": self.task_id, "title": self.title, "project": self.project,
+            "owner": self.owner, "due_date": self.due_raw,
+            "decision": action.decision, "target": action.target, "reason": action.reason,
+        })
+
+
+def digest(fields: dict) -> str:
+    raw = json.dumps(fields, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
 
 
 @dataclass(frozen=True)

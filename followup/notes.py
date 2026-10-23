@@ -13,7 +13,7 @@ MATERIALS = re.compile(rf"\b({ITEMS}|warehouse|supplier|vendor)\b")
 MATERIAL_ITEMS = re.compile(rf"\b({ITEMS})\b")
 # A blocker cue: waiting for, short of, or not received. What it waits for decides the kind.
 WAITING = re.compile(
-    r"\b(await\w*|waiting|pending|blocked (?:by|on)|held up|dependent on|depends on|backorder\w*|"
+    r"\b(await\w*|waiting|pending|blocked|held up|on order|dependent on|depends on|backorder\w*|"
     r"out of|shortage|short on|missing|not available|unavailable|need\w*|delay\w*|late|ran out|"
     r"run out|(?:proceed|start) until|(?:date|eta) unknown|unknown eta|no eta|"
     r"no (?:materials?|supplies|parts|equipment|cable|conduit))\b"

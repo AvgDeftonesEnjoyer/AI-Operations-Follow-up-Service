@@ -88,7 +88,7 @@ class LookupFailureTests(unittest.TestCase):
         task = Task.from_dict(dict(task_id="A", task="Inspect", assigned_to="Sam",
                                    due_date="2026-10-20", status="Working on it"))
         action = decide(task, date(2026, 10, 21))
-        self.action = replace(action, operation_id=task.fingerprint(action.decision, action.target))
+        self.action = replace(action, operation_id=task.operation_id(action))
 
     def service(self, sender):
         return Service(None, sender, self.store, None, date(2026, 10, 21))

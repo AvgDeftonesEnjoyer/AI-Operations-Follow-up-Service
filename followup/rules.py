@@ -21,7 +21,7 @@ def decide(task: Task, today: date, blocker: str = "none",
     """Choose one safe action. Missing facts take priority over reminders.
 
     owner_asked_on is the date this owner first got a follow-up for this deadline, if ever.
-    Messages contain no day counts, so the same task state always gets the same text.
+    Messages contain no day counts, so the same action always gets the same text.
     """
     if task.status == "Done":
         return Action(task.task_id, "no_action", None, "Task is completed", None)
@@ -75,22 +75,15 @@ def decide(task: Task, today: date, blocker: str = "none",
             f"{about(task)} is marked Blocked (due {due}). Please say what is blocking it and give an ETA.",
         )
 
-    if overdue and owner_asked_on:
-        # The owner was asked already. An update since then (even the same day) is their answer.
-        updated = date.fromisoformat(task.last_update) if task.last_update else None
-        replied = updated is not None and updated >= owner_asked_on
-        quiet_since = updated if replied else owner_asked_on
-        if (today - quiet_since).days >= ESCALATE_AFTER_DAYS:
-            asked = owner_asked_on.isoformat()
-            return Action(
-                task.task_id, "escalate", COORDINATION_QUEUE,
-                f"Overdue since {due}; owner asked on {asked}",
-                f"{about(task)} has been overdue since {due} (owner: {task.owner}); the owner was "
-                f"asked on {asked}. Please agree a recovery plan and ETA with the owner.",
-            )
-        if replied:
-            return Action(task.task_id, "no_action", None,
-                          f"Owner updated the task on {updated.isoformat()}", None)
+    # The owner is asked first; if the task is still overdue days later, coordination steps in.
+    if overdue and owner_asked_on and (today - owner_asked_on).days >= ESCALATE_AFTER_DAYS:
+        asked = owner_asked_on.isoformat()
+        return Action(
+            task.task_id, "escalate", COORDINATION_QUEUE,
+            f"Overdue since {due}; owner asked on {asked}",
+            f"{about(task)} has been overdue since {due} (owner: {task.owner}); the owner was "
+            f"asked on {asked}. Please agree a recovery plan and ETA with the owner.",
+        )
 
     if overdue:
         return Action(

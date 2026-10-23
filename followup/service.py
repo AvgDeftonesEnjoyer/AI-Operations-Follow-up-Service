@@ -60,7 +60,7 @@ class Service:
             raise ValueError("Duplicate task IDs in fixture: refusing inconsistent sends")
         return tasks
 
-    def deliver(self, action, due_date=None):
+    def deliver(self, action):
         """Send at most once per operation ID. Returns the delivery status."""
         key = action.operation_id
         # The provider kept failing earlier in this run: do not flood it; the next run resumes.
@@ -68,7 +68,7 @@ class Service:
             self.store.log("send_deferred", key)
             return "deferred"
         try:
-            return self._deliver(action, due_date)
+            return self._deliver(action)
         except (APIError, AmbiguousTimeout) as error:
             # An unavailable lookup is not evidence that nothing was sent: send nothing.
             self.store.log("lookup_failed", key, type(error).__name__)
@@ -87,11 +87,10 @@ class Service:
                 self.store.log("lookup_retry", key, f"Attempt {attempt}")
                 pause(attempt)
 
-    def _deliver(self, action, due_date):
+    def _deliver(self, action):
         key = action.operation_id
         body = {k: v for k, v in action.to_dict("pending").items()
                 if k != "delivery_status"}
-        body.update(as_of=self.today.isoformat(), due_date=due_date)
 
         # Reconciliation first: a previous run may have timed out after sending.
         if self.lookup(key) is not None:
@@ -125,7 +124,7 @@ class Service:
             return "none"  # Missing facts or a finished task: the notes cannot change the action.
         if task.status != "Blocked" and self.today <= task.due_date:
             return "none"  # On time and not blocked: no action either way, so no model cost.
-        state_id = task.fingerprint(None, None)
+        state_id = task.state_id()
         stored = self.store.get_classification(state_id)
         if stored is not None:
             return stored
@@ -133,8 +132,8 @@ class Service:
         if fallback_reason is not None:
             self.fallbacks += 1
             self.store.log("llm_fallback", detail=f"Task {task.task_id}; reason={fallback_reason}")
-        # Pinned per task state, fallback or not: a model that answers differently next run
-        # cannot turn the same state into a second message. The first worker to pin wins.
+        # Pinned per note text, fallback or not: a model that answers differently next run
+        # cannot turn the same notes into a different action. The first worker to pin wins.
         return self.store.save_classification(state_id, label)
 
     def iter_results(self):
@@ -146,10 +145,13 @@ class Service:
                 yield action.to_dict("not_needed")
                 continue
 
-            action = replace(
-                action, operation_id=task.fingerprint(action.decision, action.target)
-            )
-            yield action.to_dict(self.deliver(action, task.due_raw))
+            action = replace(action, operation_id=task.operation_id(action))
+            status = self.deliver(action)
+            if status in {"sent", "reconciled", "already_sent"}:
+                # Our own record of what was delivered: escalation timing must not depend on
+                # what a real provider keeps.
+                self.store.record_action(action, task.due_raw, self.today)
+            yield action.to_dict(status)
 
     def run(self):
         return list(self.iter_results())

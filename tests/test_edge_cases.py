@@ -71,7 +71,8 @@ class RegressionTests(unittest.TestCase):
         self.fixture.write_text(json.dumps([{**ROW, "notes": "Updated information"}]))
         self.run_service(ai)
         self.assertEqual(ai.interpret.call_count, 2)
-        self.assertEqual(len(self.store.deliveries()), 2)
+        # The new notes lead to the same reminder for the same deadline: it is not sent again.
+        self.assertEqual(len(self.store.deliveries()), 1)
 
     def test_cached_label_does_not_freeze_date_rules(self):
         ai = Mock(interpret=Mock(return_value="none"))
@@ -104,7 +105,7 @@ class RegressionTests(unittest.TestCase):
                 result = self.run_service(ai, date(2026, 10, 24))[0]
                 self.assertEqual(result["decision"], "follow_up_owner")
 
-    def test_owner_update_after_a_follow_up_counts_as_an_answer(self):
+    def test_owner_update_gets_no_second_reminder_and_escalation_follows_the_first(self):
         ai = Mock(interpret=Mock(return_value="none"))
         overdue = {**ROW, "due_date": "2026-10-10", "notes": ""}
         self.fixture.write_text(json.dumps([overdue]))
@@ -112,25 +113,43 @@ class RegressionTests(unittest.TestCase):
         self.fixture.write_text(json.dumps([{**overdue, "notes": "80% spliced, finishing 10-25",
                                              "last_update": "2026-10-23"}]))
         replied = self.run_service(ai, date(2026, 10, 23))[0]
-        self.assertEqual(replied["decision"], "no_action")  # No "please share the status" again.
-        self.assertEqual(self.run_service(ai, date(2026, 10, 25))[0]["decision"], "no_action")
-        later = self.run_service(ai, date(2026, 10, 26))[0]  # Still overdue 3 days after the update.
+        self.assertEqual(replied["delivery_status"], "already_sent")  # No second "please share".
+        later = self.run_service(ai, date(2026, 10, 24))[0]  # Still overdue 3 days after asking.
         self.assertEqual((later["decision"], later["delivery_status"]), ("escalate", "sent"))
         self.assertEqual(len(self.store.deliveries()), 2)
 
-    def test_owner_update_on_the_follow_up_day_also_counts(self):
+    def test_escalation_timing_does_not_depend_on_the_providers_storage(self):
+        class OtherProvider:
+            """A provider that keeps receipts to itself, like a real one would."""
+            def __init__(self):
+                self.receipts = {}
+
+            def lookup(self, key):
+                return self.receipts.get(key)
+
+            def send(self, key, action):
+                return self.receipts.setdefault(key, action) is action
+
+        provider = OtherProvider()
+        self.fixture.write_text(json.dumps([{**ROW, "due_date": "2026-10-10", "notes": ""}]))
+        for day in [21, 24]:
+            result = Service(TaskAPI(str(self.fixture)), provider, self.store, Mock(),
+                             date(2026, 10, day)).run()[0]
+        self.assertEqual((result["decision"], result["delivery_status"]), ("escalate", "sent"))
+        self.assertEqual(len(provider.receipts), 2)
+
+    def test_touching_last_update_daily_does_not_postpone_escalation(self):
         ai = Mock(interpret=Mock(return_value="none"))
-        overdue = {**ROW, "due_date": "2026-10-10", "notes": ""}
-        self.fixture.write_text(json.dumps([overdue]))
-        self.run_service(ai)  # Follow-up on 10-21.
-        self.fixture.write_text(json.dumps([{**overdue, "notes": "80% spliced",
-                                             "last_update": "2026-10-21"}]))
-        self.assertEqual(self.run_service(ai, date(2026, 10, 22))[0]["decision"], "no_action")
-        self.assertEqual(len(self.store.deliveries()), 1)
+        overdue = {**ROW, "due_date": "2026-10-10", "notes": "No update since Monday."}
+        for day in [21, 22, 23, 24]:
+            self.fixture.write_text(json.dumps([{**overdue, "last_update": f"2026-10-{day}"}]))
+            result = self.run_service(ai, date(2026, 10, day))[0]
+        self.assertEqual((result["decision"], result["delivery_status"]), ("escalate", "sent"))
+        self.assertEqual(len(self.store.deliveries()), 2)
 
     def test_fallback_follows_a_label_another_worker_pinned_first(self):
         self.fixture.write_text(json.dumps([{**ROW, "notes": "Waiting for good weather"}]))
-        state_id = Task.from_dict({**ROW, "notes": "Waiting for good weather"}).fingerprint(None, None)
+        state_id = Task.from_dict({**ROW, "notes": "Waiting for good weather"}).state_id()
 
         def slow_failing_model(notes):
             # While this worker waits for the model, another worker pins "materials".
@@ -169,9 +188,14 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual((again[0]["delivery_status"], again[0]["reason"], again[0]["message"]),
                          ("already_sent", delivered["reason"], delivered["message"]))
 
+    def test_numbers_are_normalized_to_text(self):
+        item = Task.from_dict({**ROW, "task_id": 1002, "due_date": 20261018})
+        self.assertEqual(item.task_id, "1002")
+        self.assertIsNone(item.due_date)  # A number is not a YYYY-MM-DD date: clarify it.
+
     def test_bad_field_types_fail_before_any_delivery(self):
         for field in ROW:
-            for value in [False, 123, ["Sam"], {"name": "Sam"}]:
+            for value in [False, ["Sam"], {"name": "Sam"}]:
                 with self.subTest(field=field, value=value):
                     self.fixture.write_text(json.dumps([ROW, {**ROW, field: value}]))
                     with self.assertRaises(ValueError):
@@ -266,6 +290,8 @@ class RegressionTests(unittest.TestCase):
             ("Dependent on upstream splice.", "escalate", "coordination_queue"),
             ("Awaiting delivery of approved materials from warehouse.", "request_eta", "warehouse"),
             ("Delivery date unknown.", "request_eta", "Sam"),
+            ("Blocked: materials.", "request_eta", "Sam"),
+            ("Materials on order.", "request_eta", "Sam"),
             ("Backorder resolved.", "follow_up_owner", "Sam"),
             ("No material shortage.", "follow_up_owner", "Sam"),
             ("No backorder, parts on site.", "follow_up_owner", "Sam"),
@@ -462,7 +488,7 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(self.store.deliveries(), [])
 
         # The error names the record and the field, so an unseen fixture can be fixed quickly.
-        self.fixture.write_text(json.dumps([ROW, {**ROW, "task_id": "B", "last_update": 20261019}]))
+        self.fixture.write_text(json.dumps([ROW, {**ROW, "task_id": "B", "last_update": ["2026-10-19"]}]))
         self.assertEqual(self.cli().returncode, 1)
         self.assertEqual(json.loads((self.root / "log.json").read_text())["run"]["error"],
                          "ValueError: Task #2: last_update must be a string or null")
