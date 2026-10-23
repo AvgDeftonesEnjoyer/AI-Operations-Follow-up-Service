@@ -213,6 +213,14 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual((first["decision"], first["target"]), ("request_eta", "warehouse"))
         self.assertEqual(self.run_service(Mock(), date(2026, 10, 24))[0]["decision"], "escalate")
 
+    def test_one_age_escalation_per_deadline_even_when_the_owner_changes_back(self):
+        task = {**ROW, "due_date": "2026-10-10", "notes": ""}
+        for day, owner in [(21, "Sam"), (22, "Bob"), (25, "Bob"), (26, "Sam")]:
+            self.fixture.write_text(json.dumps([{**task, "assigned_to": owner}]))
+            self.run_service(Mock(), date(2026, 10, day))
+        escalations = [d for d in self.store.deliveries() if d["action"]["decision"] == "escalate"]
+        self.assertEqual(len(escalations), 1)
+
     def test_editing_a_message_template_does_not_resend(self):
         self.fixture.write_text(json.dumps([ROW]))
         self.run_service(Mock())
@@ -409,6 +417,9 @@ class RegressionTests(unittest.TestCase):
             ("Parts back-ordered from vendor.", "request_eta", "Sam"),
             ("Handholes not delivered yet.", "request_eta", "Sam"),
             ("Materials stuck in transit.", "request_eta", "Sam"),
+            ("Can't proceed unless materials arrive.", "request_eta", "Sam"),
+            ("Waiting on materials. Update: received.", "follow_up_owner", "Sam"),
+            ("Waiting on PO-4471 approval.", "follow_up_owner", "Sam"),
             ("Permit received, but still waiting on conduit delivery from warehouse.", "request_eta", "warehouse"),
             ("Vendor shipment delayed; warehouse not involved.", "request_eta", "Sam"),
             ("Warehouse delivered the cable; waiting for city permit.", "escalate", "coordination_queue"),

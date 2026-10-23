@@ -15,14 +15,14 @@ MATERIAL_ITEMS = re.compile(rf"\b({ITEMS})\b")
 WAITING = re.compile(
     r"\b(await\w*|waiting|pending|blocked|held up|stuck|in transit|on order|dependent on|depends on|"
     r"back[- ]?order\w*|out of|shortage|short on|missing|not available|unavailable|delay\w*|late|ran out|"
-    r"run out|(?:proceed|start) until|(?:date|eta) (?:unknown|tbd)|unknown eta|no eta|"
+    r"run out|(?:proceed|start) (?:until|unless)|(?:date|eta) (?:unknown|tbd)|unknown eta|no eta|"
     r"no (?:materials?|supplies|parts|equipment|cable|conduit))\b"
     r"|(?:\bnot|\bnever|\bnothing|n't) (?:yet )?(?:been )?(?:deliver|ship|receiv|arriv)\w*"
 )
 NOT_RECEIVED = re.compile(r"(?:\bnot|\bnever|\bnothing|n't) (?:yet )?(?:been )?(?:deliver|ship|receiv|arriv)\w*")
 # Only a wait on upstream work, a permit, or another task ("blocked by TC-1008": letters, a
 # dash, three or more digits; "Oct-25" is a date) goes past the owner to coordination.
-UPSTREAM = re.compile(r"\b(upstream|permit|[a-z]{2,5}-\d{3,})\b")
+UPSTREAM = re.compile(r"\b(upstream|permit|(?!po-)[a-z]{2,5}-\d{3,})\b")  # PO-4471 is an order.
 # "No backorder", "not delayed", "no materials issues": a negated blocker is not a blocker.
 NEGATED = re.compile(
     r"\b(?:no longer|no|not|nothing|never) (?:await\w*|waiting|pending|delay\w*|back[- ]?order\w*|out of stock|"
@@ -34,11 +34,11 @@ RESOLVED = re.compile(r"\b(resolved|received|arrived|delivered|completed|approve
 STILL_PENDING = re.compile(r"\b(no(?! longer)|not|never|nothing|until|yet|await\w*|waiting|pending)\b|n't")
 # "..., now resolved", "they arrived today": the update refers to the blocker just mentioned.
 BARE_RESOLUTION = re.compile(
-    r"\s*(?:(?:it|this|that|they|these|those) )?(?:is |are |was |were |has |have )?(?:been )?"
+    r"\s*(?:update: ?)?(?:(?:it|this|that|they|these|those) )?(?:is |are |was |were |has |have )?(?:been )?"
     r"(?:now |all )?(?:resolved|cleared|arrived|received|delivered)(?: today| yesterday)?\s*"
 )
 # "If a backorder occurs" or "could become a problem" is not a blocker yet; "if possible" is courtesy.
-HYPOTHETICAL = re.compile(r"\b(if(?! possible)|unless|in case|might|could become|may become)\b")
+HYPOTHETICAL = re.compile(r"\b(if(?! possible)|(?<!proceed )unless|in case|might|could become|may become)\b")
 FILLER = {"have", "been", "were", "with", "from", "that", "this", "today", "fully", "also"}
 
 

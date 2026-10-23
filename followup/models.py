@@ -22,7 +22,11 @@ STATUSES = {
 # Placeholder text in the owner field means that nobody is assigned yet.
 NO_OWNER = {"tbd", "tba", "tbc", "n/a", "na", "none", "null", "unknown", "pending", "vacant",
             "nobody", "open", "-", "?"}
-NO_OWNER_PHRASE = re.compile(r"\b(unassigned|no owner|not (?:yet )?assigned|to (?:be )?assign(?:ed)?|tb[acd])\b")
+NO_OWNER_PHRASE = re.compile(
+    r"\b(unassigned|no owner|no ?one|no assignee|needs? (?:an )?owner|unknown owner|none assigned|"
+    r"not (?:yet )?assigned|to (?:be )?assign(?:ed)?|(?:pending|awaiting) assignment|"
+    r"to be (?:determined|confirmed)|tb[acd])\b"
+)
 
 
 def clean(data, field):

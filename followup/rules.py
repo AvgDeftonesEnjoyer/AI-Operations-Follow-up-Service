@@ -61,7 +61,7 @@ def decide(task: Task, today: date, blocker: str = "none",
             task.task_id, "escalate", COORDINATION_QUEUE, f"Overdue since {due}; chased on {chased}",
             f"{task.heading} has been overdue since {due} (owner: {task.owner}) and was first "
             f"chased on {chased}. Please agree a recovery plan and ETA with the owner.",
-            key=f"overdue since {due}; chased on {chased}",
+            key=f"overdue since {due}",  # One age escalation per deadline, whoever the owner is.
         )
 
     if blocker == "materials" and needs_attention(task, today):

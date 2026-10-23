@@ -116,8 +116,6 @@ class Service:
                 self.store.log("send_retry", key, f"Attempt {attempt}: {error}")
                 pause(attempt)
 
-        return "failed"
-
     def classify(self, task):
         """The blocker label for a task's notes, asked of the model only when it can matter.
 
