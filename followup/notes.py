@@ -13,17 +13,17 @@ MATERIALS = re.compile(rf"\b({ITEMS}|warehouse|supplier|vendor)\b")
 MATERIAL_ITEMS = re.compile(rf"\b({ITEMS})\b")
 # Waiting for, short of, or not received: a materials blocker when the clause names materials.
 WAITING = re.compile(
-    r"\b(await\w*|waiting|pending|backorder\w*|out of stock|shortage|short on|missing|"
-    r"not available|unavailable|need\w*|delay\w*|ran out|run out|(?:proceed|start) until|"
-    r"no (?:materials?|supplies|parts|equipment|cable|conduit))\b"
+    r"\b(await\w*|waiting|pending|blocked (?:by|on)|held up|backorder\w*|out of|shortage|short on|"
+    r"missing|not available|unavailable|need\w*|delay\w*|late|ran out|run out|(?:proceed|start) until|"
+    r"eta unknown|unknown eta|no eta|no (?:materials?|supplies|parts|equipment|cable|conduit))\b"
     r"|(?:\bnot|\bnever|\bnothing|n't) (?:yet )?(?:been )?(?:deliver|ship|receiv|arriv)\w*"
 )
 # Only an explicit dependency on other work goes past the owner to coordination.
-UPSTREAM = re.compile(r"\b(upstream|dependent on|depends on|blocked by|permit|(?:proceed|start) until)\b")
-# "No backorder", "not delayed", "no missing materials": a negated blocker is not a blocker.
+UPSTREAM = re.compile(r"\b(upstream|dependent on|depends on|permit|(?:proceed|start) until)\b")
+# "No backorder", "not delayed", "no need for parts": a negated blocker is not a blocker.
 NEGATED = re.compile(
     r"\b(?:no|not|nothing|never) (?:await\w*|waiting|pending|delay\w*|backorder\w*|out of stock|"
-    r"blocked by|dependent on|upstream)\b|\bno (?:\w+ )?(?:shortage|missing)\b"
+    r"blocked (?:by|on)|dependent on|upstream|need\w*)\b|\bno (?:\w+ )?(?:shortage|missing)\b"
 )
 RESOLVED = re.compile(r"\b(resolved|received|arrived|delivered|completed|approved|cleared|no longer)\b")
 STILL_PENDING = re.compile(r"\b(no(?! longer)|not|never|nothing|until|yet)\b|n't")

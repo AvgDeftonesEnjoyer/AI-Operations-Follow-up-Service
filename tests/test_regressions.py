@@ -1,4 +1,4 @@
-"""Regressions found during review; no network or credentials required."""
+"""Edge-case regressions across notes, delivery and the Claude adapter; no network needed."""
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
@@ -118,6 +118,28 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual((later["decision"], later["delivery_status"]), ("escalate", "sent"))
         self.assertEqual(len(self.store.deliveries()), 2)
 
+    def test_owner_update_on_the_follow_up_day_also_counts(self):
+        ai = Mock(interpret=Mock(return_value="none"))
+        overdue = {**ROW, "due_date": "2026-10-10", "notes": ""}
+        self.fixture.write_text(json.dumps([overdue]))
+        self.run_service(ai)  # Follow-up on 10-21.
+        self.fixture.write_text(json.dumps([{**overdue, "notes": "80% spliced",
+                                             "last_update": "2026-10-21"}]))
+        self.assertEqual(self.run_service(ai, date(2026, 10, 22))[0]["decision"], "no_action")
+        self.assertEqual(len(self.store.deliveries()), 1)
+
+    def test_fallback_follows_a_label_another_worker_pinned_first(self):
+        self.fixture.write_text(json.dumps([{**ROW, "notes": "Waiting for good weather"}]))
+        state_id = Task.from_dict({**ROW, "notes": "Waiting for good weather"}).fingerprint(None, None)
+
+        def slow_failing_model(notes):
+            # While this worker waits for the model, another worker pins "materials".
+            self.store.save_classification(state_id, "materials")
+            raise AIError("Claude request failed: timeout", "timeout")
+
+        result = self.run_service(Mock(interpret=Mock(side_effect=slow_failing_model)))[0]
+        self.assertEqual(result["decision"], "request_eta")  # Not a second, different action.
+
     def test_fallback_label_is_not_pinned_when_no_action_was_taken(self):
         # On time and not blocked: the fallback label leads to no action, so nothing is pinned
         # and the recovered model is asked again on the next run.
@@ -147,8 +169,10 @@ class RegressionTests(unittest.TestCase):
                     self.assertEqual(self.store.deliveries(), [])
 
     def test_dates_are_strict_and_last_update_is_normalized(self):
-        for value in ["20261020", "2026-W43-2", "2026-02-30"]:
+        for value in ["20261020", "2026-W43-2", "2026-02-30", "2026-10-18Tnoon"]:
             self.assertIsNone(Task.from_dict({**ROW, "due_date": value}).due_date)
+        for value in ["2026-10-18T00:00:00Z", "2026-10-18T09:30:00+03:00"]:
+            self.assertEqual(Task.from_dict({**ROW, "due_date": value}).due_date, date(2026, 10, 18))
         self.assertIsNone(Task.from_dict({**ROW, "last_update": "invalid"}).last_update)
         self.assertEqual(Task.from_dict({**ROW, "last_update": " 2026-10-19 "}).last_update,
                          "2026-10-19")
@@ -218,6 +242,12 @@ class RegressionTests(unittest.TestCase):
             ("Supplies delayed.", "request_eta", "Sam"),
             ("Ran out of conduit.", "request_eta", "Sam"),
             ("Awaiting materials from warehouse; PO approved.", "request_eta", "warehouse"),
+            ("Blocked by materials.", "request_eta", "Sam"),  # The spec's own wording.
+            ("Blocked by material delivery from warehouse.", "request_eta", "warehouse"),
+            ("Held up by materials.", "request_eta", "Sam"),
+            ("Materials ETA unknown.", "request_eta", "Sam"),
+            ("Blocked by weather.", "follow_up_owner", "Sam"),
+            ("No need for extra parts.", "follow_up_owner", "Sam"),
             ("Backorder resolved.", "follow_up_owner", "Sam"),
             ("No material shortage.", "follow_up_owner", "Sam"),
             ("No backorder, parts on site.", "follow_up_owner", "Sam"),

@@ -76,9 +76,9 @@ def decide(task: Task, today: date, blocker: str = "none",
         )
 
     if overdue and owner_asked_on:
-        # The owner was asked already. An update after that counts as their answer.
+        # The owner was asked already. An update since then (even the same day) is their answer.
         updated = date.fromisoformat(task.last_update) if task.last_update else None
-        replied = updated is not None and updated > owner_asked_on
+        replied = updated is not None and updated >= owner_asked_on
         quiet_since = updated if replied else owner_asked_on
         if (today - quiet_since).days >= ESCALATE_AFTER_DAYS:
             asked = owner_asked_on.isoformat()

@@ -46,11 +46,12 @@ def clean(data, field):
 
 
 def parse_date(value):
-    """Invalid dates stay unknown. We never guess a deadline."""
+    """YYYY-MM-DD, or an ISO timestamp whose date part is used. Invalid dates stay unknown."""
+    pattern = r"\d{4}-\d{2}-\d{2}(?:T[\d:.]+(?:Z|[+-]\d{2}:?\d{2})?)?"
     try:
-        if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        if not isinstance(value, str) or not re.fullmatch(pattern, value):
             return None
-        return date.fromisoformat(value)
+        return date.fromisoformat(value[:10])
     except ValueError:
         return None
 

@@ -142,14 +142,16 @@ class Service:
             blocker, unstored_fallback = self.classify(task)
             asked_on = self.store.owner_asked_on(task.task_id, task.owner, task.due_raw)
             action = decide(task, self.today, blocker, asked_on)
+            if unstored_fallback and action.decision != "no_action":
+                # An action rests on the fallback label: pin it first, so a recovered model cannot
+                # turn the same task state into a second message. If another worker pinned a
+                # label first, follow that one instead.
+                blocker = self.store.save_classification(task.fingerprint(None, None), blocker)
+                action = decide(task, self.today, blocker, asked_on)
             if action.decision == "no_action":
                 # Nothing rests on a fallback label here, so the model gets another try next run.
                 yield action.to_dict("not_needed")
                 continue
-            if unstored_fallback:
-                # An action rests on the fallback label: pin it, so a recovered model cannot
-                # turn the same task state into a second, different message.
-                self.store.save_classification(task.fingerprint(None, None), blocker)
 
             action = replace(
                 action, operation_id=task.fingerprint(action.decision, action.target)

@@ -1,4 +1,4 @@
-"""Independent edge cases from repeated specification reviews."""
+"""Edge cases: note boundaries, receipt lookup failures, batch recovery."""
 
 from dataclasses import replace
 from datetime import date
